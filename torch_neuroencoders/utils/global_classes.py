@@ -26,7 +26,6 @@ import dill as pickle
 import matplotlib.pyplot as plt
 import numpy as np
 import tables
-import torch
 from matplotlib.patches import Rectangle
 from pynapple import IntervalSet, TsGroup, TsdFrame
 from shapely import MultiPoint, Polygon
@@ -794,9 +793,7 @@ class DataHelper(Project):
             )
 
         if show:
-            from torch_neuroencoders.importData.gui_elements import (
-                AnimatedPositionPlotter,
-            )
+            from torch_neuroencoders.importData.gui_elements import AnimatedPositionPlotter
 
             data_helper = copy.deepcopy(self)
             data_helper.old_positions = data_helper.positions
@@ -1815,7 +1812,7 @@ class DataHelper(Project):
             pd.Series(MovAccTsd.values)
             .rolling(window=smooth_fact_acc, center=True)
             .mean()
-            .values
+            .to_numpy()
         )
         NewMovAccTsd = nap.Tsd(t=MovAccTsd.index, d=smoothed_data)
 
@@ -2420,6 +2417,8 @@ class SpatialConstraintsMixin:
     """
 
     def __init__(self, grid_size=DEFAULT_GRIDSIZE, maze_params=None, **kwargs):
+        import tensorflow as tf
+
         self.grid_size = grid_size
         self.GRID_H, self.GRID_W = grid_size
 
@@ -2431,210 +2430,87 @@ class SpatialConstraintsMixin:
         self.forbid_mask_np, self.forbid_mask_tf = self._create_spatial_masks()
 
         # Added for unified NN operations
-        self.common_eps = torch.constant(1e-8, dtype=torch.float32)
-        self.common_neg = torch.constant(-1e5, dtype=torch.float32)
+        self.common_eps = tf.constant(1e-8, dtype=tf.float32)
+        self.common_neg = tf.constant(-1e5, dtype=tf.float32)
 
     def gaussian_heatmap_targets_tf(self, pos_batch, sigma=0.03):
         """
         Generate Gaussian target heatmap for a batch of [x, y] positions.
         """
+        import tensorflow as tf
 
-        pos_batch = torch.cast(pos_batch, torch.float32)
+        pos_batch = tf.cast(pos_batch, tf.float32)
         X = self.Xc_tf[None]  # [1, H, W]
         Y = self.Yc_tf[None]
 
         dx = pos_batch[:, 0][:, None, None] - X
         dy = pos_batch[:, 1][:, None, None] - Y
-        gauss = torch.exp(-(dx**2 + dy**2) / (2 * sigma**2))
+        gauss = tf.exp(-(dx**2 + dy**2) / (2 * sigma**2))
 
         # Apply spatial mask
         allowed_mask = self.get_allowed_mask(use_tensorflow=True)
         gauss *= allowed_mask
 
         # Normalize across grid
-        gauss_sum = torch.reduce_sum(gauss, axis=[1, 2], keepdims=True)
-        gauss = torch.where(
+        gauss_sum = tf.reduce_sum(gauss, axis=[1, 2], keepdims=True)
+        gauss = tf.where(
             gauss_sum > self.common_eps,
             gauss / (gauss_sum + self.common_eps),
-            gauss / (torch.reduce_sum(allowed_mask) + self.common_eps + 1e-9),
+            gauss / (tf.reduce_sum(allowed_mask) + self.common_eps + 1e-9),
         )
         return gauss
 
-    def gaussian_heatmap_targets_torch(self, pos_batch, sigma=0.03):
-        """Generate Gaussian target heatmaps for a batch of [x, y] positions in torch."""
-        import torch
-
-        pos_batch = torch.as_tensor(pos_batch, dtype=torch.float32)
-        device = pos_batch.device
-
-        x_grid = torch.as_tensor(self.Xc_np, dtype=torch.float32, device=device)
-        y_grid = torch.as_tensor(self.Yc_np, dtype=torch.float32, device=device)
-        x_grid = x_grid.unsqueeze(0)
-        y_grid = y_grid.unsqueeze(0)
-
-        dx = pos_batch[:, 0][:, None, None] - x_grid
-        dy = pos_batch[:, 1][:, None, None] - y_grid
-        gauss = torch.exp(-(dx**2 + dy**2) / (2 * sigma**2))
-
-        allowed_mask = self.get_allowed_mask(use_torch=True).to(device=device)
-        gauss = gauss * allowed_mask
-
-        gauss_sum = gauss.sum(dim=(1, 2), keepdim=True)
-        safe_eps = torch.tensor(1e-8, dtype=torch.float32, device=device)
-        gauss = torch.where(
-            gauss_sum > safe_eps,
-            gauss / (gauss_sum + safe_eps),
-            gauss / (allowed_mask.sum() + safe_eps + 1e-9),
-        )
-        return gauss
-
-    def windowed_soft_argmax(self, probs: torch.Tensor, window_size=9):
+    def windowed_soft_argmax(self, probs, window_size=9):
         """
         Refines position to sub-pixel precision in normalized [0, 1] space.
         probs: (B, H, W) tensor
         """
-        B = torch.shape(probs)[0]
+        import tensorflow as tf
+
+        B = tf.shape(probs)[0]
         H, W = self.GRID_H, self.GRID_W
 
         # 1. Get the Hard Argmax Pixel Indices
-        flat_probs = torch.reshape(probs, [B, -1])
-        idx = torch.argmax(flat_probs, axis=-1)
-        py = torch.cast(idx // W, torch.int32)
-        px = torch.cast(idx % W, torch.int32)
+        flat_probs = tf.reshape(probs, [B, -1])
+        idx = tf.argmax(flat_probs, axis=-1)
+        py = tf.cast(idx // W, tf.int32)
+        px = tf.cast(idx % W, tf.int32)
 
         # 2. Create relative pixel offsets (e.g., -5 to 5)
         r = window_size // 2
-        offsets = torch.range(-r, r + 1, dtype=torch.int32)
-        yy_off, xx_off = torch.meshgrid(offsets, offsets, indexing="ij")  # (ws, ws)
+        offsets = tf.range(-r, r + 1, dtype=tf.int32)
+        yy_off, xx_off = tf.meshgrid(offsets, offsets, indexing="ij")  # (ws, ws)
 
         # 3. Calculate absolute pixel coordinates for the window
         yy_abs = py[:, None, None] + yy_off[None, :, :]
         xx_abs = px[:, None, None] + xx_off[None, :, :]
 
         # 4. Clip to stay within grid bounds [0, 44]
-        yy_clipped = torch.clip_by_value(yy_abs, 0, H - 1)
-        xx_clipped = torch.clip_by_value(xx_abs, 0, W - 1)
+        yy_clipped = tf.clip_by_value(yy_abs, 0, H - 1)
+        xx_clipped = tf.clip_by_value(xx_abs, 0, W - 1)
 
         # 5. Gather indices for gather_nd
-        batch_indices = torch.tile(
-            torch.range(B)[:, None, None], [1, window_size, window_size]
+        batch_indices = tf.tile(
+            tf.range(B)[:, None, None], [1, window_size, window_size]
         )
-        indices = torch.stack([batch_indices, yy_clipped, xx_clipped], axis=-1)
+        indices = tf.stack([batch_indices, yy_clipped, xx_clipped], axis=-1)
 
         # 6. Gather Probs AND Normalized Coordinates for the window
         # This is the "Fix": we pull from your [0, 1] meshes (Xc, Yc)
-        w_probs = torch.gather_nd(probs, indices)
-        w_xc = torch.gather_nd(torch.tile(self.Xc_tf[None], [B, 1, 1]), indices)
-        w_yc = torch.gather_nd(torch.tile(self.Yc_tf[None], [B, 1, 1]), indices)
+        w_probs = tf.gather_nd(probs, indices)
+        w_xc = tf.gather_nd(tf.tile(self.Xc_tf[None], [B, 1, 1]), indices)
+        w_yc = tf.gather_nd(tf.tile(self.Yc_tf[None], [B, 1, 1]), indices)
 
         # 7. Local Re-normalization of probabilities within the window
         w_probs_norm = w_probs / (
-            torch.reduce_sum(w_probs, axis=[1, 2], keepdims=True) + 1e-8
+            tf.reduce_sum(w_probs, axis=[1, 2], keepdims=True) + 1e-8
         )
 
         # 8. Compute refined Center of Mass in [0, 1] space
-        refined_x = torch.reduce_sum(w_probs_norm * w_xc, axis=[1, 2])
-        refined_y = torch.reduce_sum(w_probs_norm * w_yc, axis=[1, 2])
+        refined_x = tf.reduce_sum(w_probs_norm * w_xc, axis=[1, 2])
+        refined_y = tf.reduce_sum(w_probs_norm * w_yc, axis=[1, 2])
 
         return refined_x, refined_y
-
-    def windowed_soft_argmax_torch(self, probs, window_size=9):
-        """Torch version of the local soft-argmax refinement."""
-        import torch
-
-        B = probs.shape[0]
-        H, W = self.GRID_H, self.GRID_W
-
-        flat_probs = probs.reshape(B, -1)
-        idx = torch.argmax(flat_probs, dim=-1)
-        py = idx // W
-        px = idx % W
-
-        r = window_size // 2
-        offsets = torch.arange(-r, r + 1, device=probs.device, dtype=torch.int64)
-        yy_off, xx_off = torch.meshgrid(offsets, offsets, indexing="ij")
-
-        yy_abs = py[:, None, None] + yy_off[None, :, :]
-        xx_abs = px[:, None, None] + xx_off[None, :, :]
-        yy_clipped = torch.clamp(yy_abs, 0, H - 1)
-        xx_clipped = torch.clamp(xx_abs, 0, W - 1)
-
-        batch_indices = torch.arange(B, device=probs.device)[:, None, None].expand(
-            B, window_size, window_size
-        )
-        indices = torch.stack([batch_indices, yy_clipped, xx_clipped], dim=-1)
-
-        w_probs = probs[indices[..., 0], indices[..., 1], indices[..., 2]]
-        x_grid = torch.as_tensor(self.Xc_np, dtype=probs.dtype, device=probs.device)
-        y_grid = torch.as_tensor(self.Yc_np, dtype=probs.dtype, device=probs.device)
-        w_xc = x_grid[indices[..., 1], indices[..., 2]]
-        w_yc = y_grid[indices[..., 1], indices[..., 2]]
-
-        w_probs_norm = w_probs / (w_probs.sum(dim=(1, 2), keepdim=True) + 1e-8)
-        refined_x = (w_probs_norm * w_xc).sum(dim=(1, 2))
-        refined_y = (w_probs_norm * w_yc).sum(dim=(1, 2))
-
-        return refined_x, refined_y
-
-    def decode_and_uncertainty_torch(
-        self, logits_hw, mode="soft_argmax", return_probs=False
-    ):
-        """Torch version of the unified decoding logic for Gaussian heatmaps."""
-        import torch
-
-        B = logits_hw.shape[0]
-        H, W = self.GRID_H, self.GRID_W
-
-        common_neg = torch.tensor(-1e5, dtype=logits_hw.dtype, device=logits_hw.device)
-        common_eps = torch.tensor(1e-8, dtype=logits_hw.dtype, device=logits_hw.device)
-
-        forbid_mask = torch.as_tensor(
-            self.forbid_mask_np, dtype=logits_hw.dtype, device=logits_hw.device
-        )
-        masked_logits = torch.where(forbid_mask[None] > 0, common_neg, logits_hw)
-
-        probs_flat = torch.softmax(masked_logits.reshape(B, H * W), dim=-1)
-        probs = probs_flat.reshape(B, H, W)
-
-        allowed_mask = self.get_allowed_mask(use_torch=True).to(device=logits_hw.device)
-        probs_allowed = probs * allowed_mask
-        sum_p = probs_allowed.sum(dim=(1, 2), keepdim=True)
-        probs_allowed = probs_allowed / (sum_p + common_eps)
-
-        x_grid = torch.as_tensor(
-            self.Xc_np, dtype=logits_hw.dtype, device=logits_hw.device
-        )
-        y_grid = torch.as_tensor(
-            self.Yc_np, dtype=logits_hw.dtype, device=logits_hw.device
-        )
-
-        if mode == "expectation":
-            ex = (probs_allowed * x_grid[None]).sum(dim=(1, 2))
-            ey = (probs_allowed * y_grid[None]).sum(dim=(1, 2))
-        elif mode == "argmax":
-            idx = torch.argmax(probs_allowed.reshape(B, H * W), dim=-1)
-            ex = x_grid.reshape(-1)[idx]
-            ey = y_grid.reshape(-1)[idx]
-        elif mode == "soft_argmax":
-            ex, ey = self.windowed_soft_argmax_torch(probs_allowed)
-        else:
-            raise ValueError(
-                f"Invalid mode {mode}, choose 'expectation' or 'argmax' or 'soft_argmax'"
-            )
-
-        varx = (probs_allowed * (x_grid[None] - ex[:, None, None]) ** 2).sum(dim=(1, 2))
-        vary = (probs_allowed * (y_grid[None] - ey[:, None, None]) ** 2).sum(dim=(1, 2))
-        var = varx + vary
-
-        maxp = probs_flat.max(dim=1).values
-        H_entropy = -(probs_flat * torch.log(probs_flat + common_eps)).sum(dim=1)
-        n_allowed = allowed_mask.sum()
-        Hn = H_entropy / torch.log(n_allowed + common_eps)
-
-        xy = torch.stack([ex, ey], dim=-1)
-        if return_probs:
-            return xy, maxp, Hn, var, probs_allowed
-        return xy, maxp, Hn, var
 
     def decode_and_uncertainty_tf(
         self, logits_hw, mode="soft_argmax", return_probs=False
@@ -2642,31 +2518,33 @@ class SpatialConstraintsMixin:
         """
         Unified decoding logic for Gaussian heatmaps.
         """
-        B = torch.shape(logits_hw)[0]
+        import tensorflow as tf
+
+        B = tf.shape(logits_hw)[0]
         H, W = self.GRID_H, self.GRID_W
 
         # Mask forbidden
-        masked_logits = torch.where(
+        masked_logits = tf.where(
             self.forbid_mask_tf[None] > 0, self.common_neg, logits_hw
         )
 
         # Softmax over grid
-        probs_flat = torch.nn.softmax(torch.reshape(masked_logits, [B, H * W]), axis=-1)
-        probs = torch.reshape(probs_flat, [B, H, W])
+        probs_flat = tf.nn.softmax(tf.reshape(masked_logits, [B, H * W]), axis=-1)
+        probs = tf.reshape(probs_flat, [B, H, W])
 
         # Renormalize (safety)
         allowed_mask = self.get_allowed_mask(use_tensorflow=True)
         probs_allowed = probs * allowed_mask
-        sum_p = torch.reduce_sum(probs_allowed, axis=[1, 2], keepdims=True)
+        sum_p = tf.reduce_sum(probs_allowed, axis=[1, 2], keepdims=True)
         probs_allowed /= sum_p + self.common_eps
 
         if mode == "expectation":
-            ex = torch.reduce_sum(probs_allowed * self.Xc_tf[None], axis=[1, 2])
-            ey = torch.reduce_sum(probs_allowed * self.Yc_tf[None], axis=[1, 2])
+            ex = tf.reduce_sum(probs_allowed * self.Xc_tf[None], axis=[1, 2])
+            ey = tf.reduce_sum(probs_allowed * self.Yc_tf[None], axis=[1, 2])
         elif mode == "argmax":  # argmax
-            idx = torch.argmax(torch.reshape(probs_allowed, [B, H * W]), axis=-1)
-            ex = torch.gather(torch.reshape(self.Xc_tf, [-1]), idx)
-            ey = torch.gather(torch.reshape(self.Yc_tf, [-1]), idx)
+            idx = tf.argmax(tf.reshape(probs_allowed, [B, H * W]), axis=-1)
+            ex = tf.gather(tf.reshape(self.Xc_tf, [-1]), idx)
+            ey = tf.gather(tf.reshape(self.Yc_tf, [-1]), idx)
         elif mode == "soft_argmax":
             ex, ey = self.windowed_soft_argmax(probs_allowed)
         else:
@@ -2675,44 +2553,42 @@ class SpatialConstraintsMixin:
             )
 
         # Variance
-        varx = torch.reduce_sum(
-            probs_allowed * torch.square(self.Xc_tf[None] - ex[:, None, None]), [1, 2]
+        varx = tf.reduce_sum(
+            probs_allowed * tf.square(self.Xc_tf[None] - ex[:, None, None]), [1, 2]
         )
-        vary = torch.reduce_sum(
-            probs_allowed * torch.square(self.Yc_tf[None] - ey[:, None, None]), [1, 2]
+        vary = tf.reduce_sum(
+            probs_allowed * tf.square(self.Yc_tf[None] - ey[:, None, None]), [1, 2]
         )
         var = varx + vary
 
         # max probability (confidence)
-        maxp = torch.reduce_max(probs_flat, axis=1)
+        maxp = tf.reduce_max(probs_flat, axis=1)
 
         # Normalized Entropy
-        H_entropy = -torch.reduce_sum(
-            probs_flat * torch.math.log(probs_flat + self.common_eps), axis=1
+        H_entropy = -tf.reduce_sum(
+            probs_flat * tf.math.log(probs_flat + self.common_eps), axis=1
         )
-        n_allowed = torch.reduce_sum(allowed_mask)
-        Hn = H_entropy / torch.math.log(n_allowed + self.common_eps)
+        n_allowed = tf.reduce_sum(allowed_mask)
+        Hn = H_entropy / tf.math.log(n_allowed + self.common_eps)
 
-        xy = torch.stack([ex, ey], axis=-1)
+        xy = tf.stack([ex, ey], axis=-1)
         if return_probs:
             return xy, maxp, Hn, var, probs_allowed
         return xy, maxp, Hn, var
 
     def _setup_coordinate_grids(self):
         """Create coordinate grids for both numpy and tensorflow"""
+        import tensorflow as tf
+
         # Numpy version (for Bayesian decoder)
         x_cent_np = np.linspace(0.5 / self.GRID_W, 1 - 0.5 / self.GRID_W, self.GRID_W)
         y_cent_np = np.linspace(0.5 / self.GRID_H, 1 - 0.5 / self.GRID_H, self.GRID_H)
         self.Xc_np, self.Yc_np = np.meshgrid(x_cent_np, y_cent_np, indexing="xy")
 
         # TensorFlow version (for ANN decoder)
-        x_cent_tf = torch.linspace(
-            0.5 / self.GRID_W, 1 - 0.5 / self.GRID_W, self.GRID_W
-        )
-        y_cent_tf = torch.linspace(
-            0.5 / self.GRID_H, 1 - 0.5 / self.GRID_H, self.GRID_H
-        )
-        self.Xc_tf, self.Yc_tf = torch.meshgrid(x_cent_tf, y_cent_tf, indexing="xy")
+        x_cent_tf = tf.linspace(0.5 / self.GRID_W, 1 - 0.5 / self.GRID_W, self.GRID_W)
+        y_cent_tf = tf.linspace(0.5 / self.GRID_H, 1 - 0.5 / self.GRID_H, self.GRID_H)
+        self.Xc_tf, self.Yc_tf = tf.meshgrid(x_cent_tf, y_cent_tf, indexing="xy")
 
     def get_spatial_config(self):
         """Return spatial config for serialization"""
@@ -2787,8 +2663,9 @@ class SpatialConstraintsMixin:
                 raise ValueError(f"maze_params dict must contain keys: {required_keys}")
         return maze_params
 
-    def _create_spatial_masks(self) -> Tuple[np.ndarray, torch.Tensor]:
+    def _create_spatial_masks(self) -> Tuple:
         """Create spatial constraint masks for both numpy and tensorflow"""
+        import tensorflow as tf
         # Create forbidden region mask
         # Note: Using your original logic where FORBID=1 means forbidden
 
@@ -2800,11 +2677,11 @@ class SpatialConstraintsMixin:
         ).astype(np.float32)
 
         # TensorFlow version
-        forbid_tf = torch.cast(
+        forbid_tf = tf.cast(
             (self.Xc_tf > self.maze_params_dict["gap_x_min"])
             & (self.Xc_tf < self.maze_params_dict["gap_x_max"])
             & (self.Yc_tf <= self.maze_params_dict["gap_y_min"]),
-            torch.float32,
+            tf.float32,
         )
 
         self.MAZE_COORDS = np.array(
@@ -2878,12 +2755,8 @@ class SpatialConstraintsMixin:
 
         return forbid_np, forbid_tf
 
-    def get_allowed_mask(self, use_tensorflow=False, use_torch=False):
+    def get_allowed_mask(self, use_tensorflow=False):
         """Get allowed mask"""
-        if use_torch:
-            import torch
-
-            return torch.as_tensor(1.0 - self.forbid_mask_np, dtype=torch.float32)
         if use_tensorflow:
             return 1.0 - self.forbid_mask_tf
         else:
@@ -2919,10 +2792,10 @@ class SpatialConstraintsMixin:
         return forbid_mask, occ
 
     def update_allowed_mask(self, forbid_mask):
+        import tensorflow as tf
+
         self.forbid_mask_np = forbid_mask.astype(np.float32)  # dynamic update for ANN
-        self.forbid_mask_tf = torch.cast(
-            forbid_mask, torch.float32
-        )  # dynamic update for ANN
+        self.forbid_mask_tf = tf.cast(forbid_mask, tf.float32)  # dynamic update for ANN
 
     def get_allowed_mask_for_bin_size(self, w, h):
         """

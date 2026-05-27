@@ -13,7 +13,6 @@ from warnings import warn
 import dill as pickle
 import matplotlib.pyplot as plt
 import numpy as np
-from torch_neuroencoders.utils.backend import pd
 import seaborn as sns
 from matplotlib.cbook import boxplot_stats
 from pynapple import (
@@ -36,6 +35,7 @@ from torch_neuroencoders.resultAnalysis import print_results
 from torch_neuroencoders.resultAnalysis.paper_figures import PaperFigures, TuningCurvesPlotter
 from torch_neuroencoders.transformData.linearizer import UMazeLinearizer
 from torch_neuroencoders.utils.PathForExperiments import path_for_experiments
+from torch_neuroencoders.utils.backend import pd
 from torch_neuroencoders.utils.func_wrappers import timing
 from torch_neuroencoders.utils.global_classes import DataHelper as DataHelperClass
 from torch_neuroencoders.utils.global_classes import (
@@ -54,8 +54,9 @@ plt.style.use("neuroencoders.mobs")
 def Info_LFP(LFP_directory, Info_name="InfoLFP"):
     from os.path import join
 
-    from torch_neuroencoders.utils.backend import pd
     from scipy.io import loadmat
+
+    from torch_neuroencoders.utils.backend import pd
 
     # Loading .mat file
 
@@ -414,19 +415,9 @@ def _restrict_by_session(df, filter_value):
     print(f"Getting Session {session_str} from Dir")
 
     if "Session" in df.columns:
-        mask = None
+        mask = pd.Series([False] * len(df))
         for session_name in filter_values:
-            try:
-                contains = df["Session"].astype(str).str.contains(session_name, na=False)
-            except NotImplementedError:
-                # cuDF's .str.contains does not support `na=`; fall back
-                contains = df["Session"].astype(str).str.contains(session_name)
-
-            if mask is None:
-                mask = contains
-            else:
-                mask = mask | contains
-
+            mask |= df["Session"].astype(str).str.contains(session_name, na=False)
         filtered_df = df[mask]
         if filtered_df.empty:
             for session_name in filter_values:
@@ -483,18 +474,6 @@ def restrict_path_for_experiment(
         )
 
     filtered_df = filter_map[filter_type](df, filter_value)
-
-    # If cuDF is available and we received a cuDF DataFrame, convert it to
-    # pandas to preserve legacy code paths that iterate over Series objects.
-    try:
-        import cudf
-
-        if isinstance(filtered_df, cudf.DataFrame):
-            filtered_df = filtered_df.to_pandas()
-    except Exception:
-        # cudf may not be installed or conversion may fail; fall back to
-        # returning whatever dataframe type we have.
-        pass
 
     return filtered_df.reset_index(drop=True)
 
@@ -576,10 +555,8 @@ def dict_to_dataframe(Dir: Dict[str, Any]) -> pd.DataFrame:
     else:
         df_dict["group"] = [None] * n_experiments
 
-    # Create a DataFrame using the configured backend (pandas or cuDF)
-    from torch_neuroencoders.utils.backend import pd as backend_pd
-
-    df = backend_pd.DataFrame(df_dict)
+    # Create DataFrame
+    df = pd.DataFrame(df_dict)
 
     return df
 
@@ -706,6 +683,7 @@ def _compute_tuning_curves_for_result(
     """Shared tuning-curve computation for a single results object."""
 
     n_dims = kwargs.get("n_dims", 2)
+    normalize = kwargs.get("normalize", True)
 
     if suffix is None:
         suffix = f"_{results_obj.phase}" if results_obj.phase != "all" else "_training"
@@ -791,6 +769,13 @@ def _compute_tuning_curves_for_result(
         under_thresh = np.sum(tuning_curves.counts, axis=1) < count_thresh
         tuning_curves = tuning_curves[~under_thresh]
         id_neurons = id_neurons[~under_thresh]
+
+    if normalize:
+        tuning_curves.values = results_obj.normalize_tuning_curves(
+            tuning_curves.values,
+            method=kwargs.get("scaling_method", "minmax"),
+            return_cmap=kwargs.get("return_cmap", False),
+        )
 
     return tuning_curves, id_neurons, spike_data, phase
 
@@ -1102,8 +1087,13 @@ class Mouse_Results(Params, PaperFigures, SpatialConstraintsMixin):
                         f"Multiple paths found for mouse {self.mouse_name} with manipulation {self.manipe} and exp_index {self.exp_index}. Please check the exp_index value and choose one of the following paths:\n{self.Dir[conditions][['path']].to_string()}"
                     )
 
-        self.path = self.Dir[conditions].iloc[0].path
-        self.network_path = self.Dir[conditions].iloc[0].network_path
+        if hasattr(self.Dir, "to_pandas"):
+            Dir = self.Dir.to_pandas()
+            conditions = conditions.to_pandas()
+        else:
+            Dir = self.Dir
+        self.path = Dir[conditions].iloc[0].path
+        self.network_path = Dir[conditions].iloc[0].network_path
         print(f"Path for {self.mouse_name} found: {self.path}")
 
     def find_xml(self):
@@ -2240,10 +2230,15 @@ class Mouse_Results(Params, PaperFigures, SpatialConstraintsMixin):
         return fullbehav_phase
 
     def convert_to_df(self, redo=False):
+        import pandas as pd_cpu
+
         if (
             hasattr(self, "results_df")
             and not redo
-            and isinstance(self.results_df, pd.DataFrame)
+            and (
+                isinstance(self.results_df, pd.DataFrame)
+                or isinstance(self.results_df, pd_cpu.DataFrame)
+            )
         ):
             print("Results DataFrame already exists. Use redo=True to recreate it.")
             return self.results_df
@@ -2347,7 +2342,7 @@ class Mouse_Results(Params, PaperFigures, SpatialConstraintsMixin):
                     data.append(row)
                     pbar.update(1)
 
-        self.results_df = pd.DataFrame(data)
+        self.results_df = pd_cpu.DataFrame(data)
         return self.results_df
 
     def get_1d_tuning_curve(self, positions, mask_indices, bins=50, sigma=1.5):
@@ -3224,10 +3219,12 @@ class Results_Loader(TuningCurvesPlotter):
         Convert the results_dict to a pandas DataFrame.
         This method will create a DataFrame with the mouse names, manipes, phases, and results.
         """
+        import pandas as pd_cpu
+
         if (
             hasattr(self, "results_df")
             and not redo
-            and isinstance(self.results_df, pd.DataFrame)
+            and isinstance(self.results_df, pd_cpu.DataFrame)
             and self.results_df.shape[0] > 0
         ):
             print(
@@ -3263,7 +3260,11 @@ class Results_Loader(TuningCurvesPlotter):
                         pbar.update(1)
 
         # Single concatenation at the end (much faster)
-        data = pd.concat(data_list, ignore_index=True) if data_list else pd.DataFrame()
+        data = (
+            pd_cpu.concat(data_list, ignore_index=True)
+            if data_list
+            else pd_cpu.DataFrame()
+        )
         self.results_df = data.sort_values(by=["mouse", "phase"]).reset_index(drop=True)
 
         return self.results_df
@@ -4572,9 +4573,10 @@ class Results_Loader(TuningCurvesPlotter):
 
         import matplotlib.pyplot as plt
         import numpy as np
-        from torch_neuroencoders.utils.backend import pd
         import seaborn as sns
         from scipy.stats import linregress
+
+        from torch_neuroencoders.utils.backend import pd
 
         folder = folder or getattr(self, "folderFigures", None)
         df = self.results_df.copy()
@@ -4723,9 +4725,10 @@ class Results_Loader(TuningCurvesPlotter):
 
         import matplotlib.pyplot as plt
         import numpy as np
-        from torch_neuroencoders.utils.backend import pd
         import seaborn as sns
         from scipy.stats import linregress
+
+        from torch_neuroencoders.utils.backend import pd
 
         folder = folder or getattr(self, "folderFigures", None)
         df = self.results_df.copy()
@@ -4915,9 +4918,10 @@ class Results_Loader(TuningCurvesPlotter):
 
         import matplotlib.pyplot as plt
         import numpy as np
-        from torch_neuroencoders.utils.backend import pd
         import seaborn as sns
         from scipy.stats import spearmanr
+
+        from torch_neuroencoders.utils.backend import pd
 
         folder = folder or getattr(self, "folderFigures", None)
         df = self.results_df.copy()
@@ -5123,9 +5127,10 @@ class Results_Loader(TuningCurvesPlotter):
 
         import matplotlib.pyplot as plt
         import numpy as np
-        from torch_neuroencoders.utils.backend import pd
         import seaborn as sns
         from scipy.stats import spearmanr
+
+        from torch_neuroencoders.utils.backend import pd
 
         folder = folder or getattr(self, "folderFigures", None)
         df = self.results_df.copy()
