@@ -1,0 +1,1525 @@
+#!/usr/bin/env python
+
+# neuroEncoder by the Memory, Oscillations and Brain States (MOBS) team
+# 2017-2024
+# by Thibault Balenbois, Pierre Orhan, Dmitri Bryzgalov and Théotime de Charrin
+# t.balenbois@gmail.com; brygalovdm@gmail.com; theotime.decharrin@gmail.com
+
+import os
+import shutil
+import subprocess
+
+# Load standard libs
+import sys
+from warnings import warn
+
+import numpy as np
+from numpy import max as np_max
+
+from neuroencoders.importData.epochs_management import inEpochsMask
+from neuroencoders.utils.backend import pd
+
+# Load custom code
+from neuroencoders.utils.global_classes import DataHelper as DataHelperClass
+from neuroencoders.utils.global_classes import (
+    Params,
+    Project,
+    get_max_nb_spikes,
+    save_project_to_pickle,
+)
+
+# Meta parameters
+show_figures = False
+debug = True
+overWrite_speed_filter_and_linearization = False
+redo_params = False
+redo_all_params = False
+# Modify the speed mask to be much more conservative
+min_speed = 7.5
+max_speed = 50
+
+
+def main(args):
+    # WARNING: This is a very long function, consider splitting it?
+    # NOTE: The "nnBehavior.mat" file is already created when executing main func see `getTsdFeature.sh`.
+    # Manage inputs
+    if not args.mode == "bayes":
+        if args.gpu:
+            from neuroencoders.utils import management
+
+            deviceName = management.manage_devices("GPU", set_memory_growth=True)
+        else:
+            os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+            os.environ["CUDA_VISIBLE_DEVICES"] = ""
+            from neuroencoders.utils import management
+
+            deviceName = management.manage_devices("CPU")
+    if args.mode == "decode":
+        jsonPath = os.path.expanduser(args.jsonPath)
+    else:
+        jsonPath = None
+
+    from neuroencoders.importData import rawdata_parser
+    from neuroencoders.resultAnalysis import print_results
+    from neuroencoders.transformData.linearizer import UMazeLinearizer
+
+    # Output to shell
+    print()
+    if not args.mode == "bayes":
+        print("NEUROENCODER: DEVICE", deviceName)
+    xmlPath = args.path.strip("'")
+    print("NEUROENCODER: PATH", xmlPath)
+    # WARNING: windowSize is in s and gets converted to ms
+    # args.window is always a list because nargs='+' is used in argparse
+    window_values = args.window if isinstance(args.window, list) else [args.window]
+    try:
+        windowSizeMSlist = [int(float(w) * 1000) for w in window_values]
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Window size(s) must be numeric.") from exc
+    windowSizeMS = max(windowSizeMSlist)
+    if len(windowSizeMSlist) > 1:
+        print(f"NEUROENCODER: WINDOW LIST {windowSizeMSlist} ms")
+
+    print(f"NEUROENCODER: WINDOW {windowSizeMS} ms")
+    mode = args.mode
+    print("NEUROENCODER: MODE", mode)
+    if mode != "bayes":
+        isPL = args.predicted_loss
+        if isPL:
+            print(
+                "Two networks will be tested: one full on training set and "
+                "one with predLoss only on a separate part of data"
+            )
+    else:
+        isPL = False
+    print()
+
+    # Get behavior and tune parameters
+    ProjectPath = Project(
+        os.path.expanduser(xmlPath),
+        jsonPath=jsonPath,
+        nameExp=args.name,
+        windowSize=windowSizeMS / 1000,
+    )
+    # Select the data for testing
+    if mode != "decode":
+        try:
+            speedThresh = rawdata_parser.speed_filter(
+                ProjectPath.folder,
+                overWrite=args.redo and overWrite_speed_filter_and_linearization,
+                phase=args.phase,
+                window_range=2000,
+                force=True
+                if (args.phase is not None and not show_figures and not args.redo)
+                else False,
+            )
+        except Exception as e:
+            # If an IndexError occurs, it means that the speed filter failed
+            print(f"Error during speed filter: {e}")
+            args.phase = None
+            speedThresh = rawdata_parser.speed_filter(
+                ProjectPath.folder,
+                overWrite=args.redo and overWrite_speed_filter_and_linearization,
+                phase=args.phase,
+                force=False,
+            )
+            warn(
+                f'"IndexError" occurred for {ProjectPath.folder}, setting phase to None.'
+            )
+        rawdata_parser.select_epochs(
+            ProjectPath.folder,
+            overWrite=(
+                True
+                if (args.redo and args.phase is not None and redo_params)
+                else False
+            ),
+            phase=args.phase,
+            force=True if (args.phase is not None and not show_figures) else False,
+            # We set it to false to have the test set at the end!
+            find_best_sets=False,
+        )
+
+    # Create parameters
+    DataHelper = DataHelperClass(
+        ProjectPath.xml,
+        mode=mode,
+        target=args.target,
+        phase=args.phase,
+        nameExp=args.name,
+        windowSize=windowSizeMS / 1000,
+        force_ref=False,
+        isPredLoss=isPL,
+        load_at_init=True,  # we load a new params
+    )
+    helpers = [DataHelper]
+    if args.phase != "cond":
+        rawdata_parser.speed_filter(
+            ProjectPath.folder,
+            overWrite=args.redo and overWrite_speed_filter_and_linearization,
+            phase="cond",
+            template=args.phase,
+            window_range=2000,
+            force=True
+            if (args.phase is not None and not show_figures and not args.redo)
+            else False,
+            threshold=speedThresh,
+        )
+        rawdata_parser.select_epochs(
+            ProjectPath.folder,
+            overWrite=(
+                True
+                if (
+                    args.redo
+                    and args.phase is not None
+                    and redo_params
+                    and redo_all_params
+                )
+                else False
+            ),
+            phase="cond",
+            force=True if (args.phase is not None and not show_figures) else False,
+            find_best_sets=True,
+        )
+        DataHelper_cond = DataHelperClass(
+            ProjectPath.xml,
+            mode=mode,
+            target=args.target,
+            phase="cond",
+            nameExp=args.name,
+            windowSize=windowSizeMS / 1000,
+            force_ref=False,
+            isPredLoss=isPL,
+            load_at_init=True,  # we load a new params
+        )
+        # adding post test helper
+        rawdata_parser.speed_filter(
+            ProjectPath.folder,
+            overWrite=args.redo and overWrite_speed_filter_and_linearization,
+            phase="post",
+            template=args.phase,
+            window_range=2000,
+            force=True
+            if (args.phase is not None and not show_figures and not args.redo)
+            else False,
+            threshold=speedThresh,
+        )
+        rawdata_parser.select_epochs(
+            ProjectPath.folder,
+            overWrite=(
+                True
+                if (
+                    args.redo
+                    and args.phase is not None
+                    and redo_params
+                    and redo_all_params
+                )
+                else False
+            ),
+            phase="post",
+            force=True if (args.phase is not None and not show_figures) else False,
+            find_best_sets=True,
+        )
+        DataHelper_post = DataHelperClass(
+            ProjectPath.xml,
+            mode=mode,
+            target=args.target,
+            phase="post",
+            nameExp=args.name,
+            windowSize=windowSizeMS / 1000,
+            force_ref=False,
+            isPredLoss=isPL,
+            load_at_init=True,  # we load a new params
+        )
+        helpers = [DataHelper_cond, DataHelper_post, DataHelper]
+    for helper in helpers:
+        # Create linearization function
+        Linearizer = UMazeLinearizer(
+            ProjectPath.folder,
+            phase=helper.phase,
+            data_helper=helper,
+            redo=args.redo and overWrite_speed_filter_and_linearization,
+        )
+        Linearizer.verify_linearization(
+            # WARNING: should we use the helper.maxPos() here?
+            # as positions are already Aligned/Normalized --> only for viz
+            helper.positions / helper.maxPos(),
+            ProjectPath.folder,
+            overwrite=args.redo and overWrite_speed_filter_and_linearization,
+        )
+
+        if min_speed is not None and max_speed is not None:
+            # Mimic rawdata_parser logic: handle shape mismatch and apply Hamming convolution
+            helper.force_speed_mask(
+                min_speed, max_speed, l_function=Linearizer.pykeops_linearization
+            )
+
+        speedMask = helper.fullBehavior["Times"]["speedFilter"]
+        pos_time = helper.fullBehavior["positionTime"][:, 0]
+        epochMask = inEpochsMask(
+            pos_time,
+            helper.fullBehavior["Times"]["trainEpochs"],
+        )
+        totMask = speedMask * epochMask
+        full_training_true_positions = helper.fullBehavior["Positions"][totMask]
+
+        Linearizer.plot_linearization_variable(
+            full_training_true_positions / np_max(full_training_true_positions),
+            folder=ProjectPath.folder,
+            show=show_figures,
+            training=True,
+        )
+
+        l_function = Linearizer.pykeops_linearization
+
+        # Now that we have the linearization function, we can get the true target
+        helper.get_true_target(
+            windowSizeMS, l_function, in_place=True, show=show_figures, speedMask=True
+        )
+
+    if windowSizeMS >= 504:
+        batch_size = 32
+    elif windowSizeMS >= 252:
+        batch_size = 64
+    elif windowSizeMS >= 108:
+        batch_size = 128
+    else:
+        batch_size = 512
+
+    Parameters = Params(
+        helper=DataHelper,
+        windowSize=windowSizeMS / 1000,
+        nEpochs=args.epochs,
+        phase=args.phase,
+        nFeatures=args.n_features,
+        batch_size=batch_size,
+        save_json=True,
+        load_at_init=True,  # we load a new params
+        isTransformer=not args.lstm,
+        transform_w_log=args.transform_w_log,
+        denseweight=args.dense_weight,
+        mixed_loss=args.mixed_loss,
+        GaussianHeatmap=not args.no_gaussian,
+        all_args=vars(args),
+        lstmLayers=args.n_transformers,
+        dim_factor=args.dim_factor,
+        loss_type=args.loss_type,
+        project_transformer=not args.no_project_transformer,
+        reduce_dense=args.reduce_dense,
+        no_cnn=args.no_cnn,
+        contrastive_loss=args.contrastive_loss,
+    )
+
+    # Save ProjectPath object
+    save_project_to_pickle(ProjectPath)
+
+    # Save DataHelper object to pickle
+    suffix = f"_{args.phase}" if args.phase is not None else ""
+    output = os.path.join(
+        ProjectPath.experimentPath,
+        f"DataHelper{suffix}.pkl",
+    )
+    save_project_to_pickle(DataHelper, output=output)
+
+    if args.striding is None and args.striding_factor is None:
+        raise ValueError(
+            "You must provide either a striding (-s) or a striding factor (-sfact) argument."
+        )
+
+    if args.striding_factor is None:
+        windowStride = args.striding
+        strideFactor = round(windowSizeMS / 1000 / windowStride, 4)
+        # check if windowStride is an integer, if not raise an error
+        if not strideFactor.is_integer():
+            raise ValueError(
+                f"The {args.window}ms window size is not compatible with the {args.striding}ms stride."
+            )
+    else:
+        strideFactor = args.striding_factor
+        windowStride = round(windowSizeMS / 1000 / strideFactor, 4)
+        if windowStride < 0.036:
+            warn(
+                f"The selected striding factor of {strideFactor} is too high for the selected window size of {args.window}s (would make a windowStride of {windowStride}). Setting striding to 36ms."
+            )
+            windowStride = 0.036
+            if windowSizeMS / 1000 == 0.036:
+                # this way we dont have to recreate them.
+                strideFactor = 1
+        # check if windowStride is a valid ms value, if not raise an error
+        if not (1000 * windowStride).is_integer():
+            raise ValueError(
+                f"The {args.window}ms window size is not compatible with the {strideFactor} striding factor."
+            )
+    # WARN: only for now - maybe need to add another check for floats ?
+    strideFactor = int(strideFactor)
+
+    # Training, testing, and preparing network for online setup
+    if mode == "bayes":
+        from neuroencoders.simpleBayes import decode_bayes as BayesTraining
+
+        try:
+            TrainerBayes = BayesTraining.Trainer(
+                ProjectPath,
+                phase=args.phase,
+                grid_size=Parameters.GaussianGridSize,
+                maze_params=DataHelper.maze_coords,
+            )
+
+            # Load or create bayesMatrices
+            if args.redo and windowSizeMS == 108:
+                print("Recomputing bayes matrices")
+            bayesMatrices = TrainerBayes.train_order_by_pos(
+                DataHelper.fullBehavior,
+                l_function=l_function,
+                mutual_info_method=Parameters.mutual_info_method,
+                load_last_bayes=True,
+                redo=args.redo and windowSizeMS == 108,
+            )
+
+            # now run the fancy inference
+            if (
+                not os.path.exists(
+                    os.path.join(
+                        TrainerBayes.folderResult,
+                        str(windowSizeMS),
+                        "errorFig_2d_bayes_training_inferring.png",
+                    )
+                )
+                or args.redo
+            ):
+                print("\nTesting training set")
+                timeStepPred = np.squeeze(
+                    np.array(
+                        pd.read_csv(
+                            os.path.join(
+                                ProjectPath.folderResult,
+                                str(windowSizeMS),
+                                "timeStepsPred_training.csv",
+                            )
+                        ).values[:, 1:],
+                        dtype=np.float64,
+                    )
+                ).flatten()
+                outputs = TrainerBayes.test_as_NN(
+                    DataHelper.fullBehavior,
+                    bayesMatrices,
+                    timeStepPred,
+                    windowSizeMS=windowSizeMS,
+                    useTrain=True,
+                    useTest=False,
+                    l_function=l_function,
+                    phase="training",
+                )
+                print_results.print_results(
+                    TrainerBayes.folderResult,
+                    typeDec="bayes",
+                    results=outputs,
+                    windowSizeMS=windowSizeMS,
+                    show=show_figures,
+                    lossSelection=0.1,
+                    euclidean=False,
+                    target=args.target,
+                    phase="training",
+                    force=args.redo,
+                    useSpeedMask=True,
+                    training_data=TrainerBayes.training_data,
+                    l_function=l_function,
+                )
+
+            if (
+                not os.path.exists(
+                    os.path.join(
+                        TrainerBayes.folderResult,
+                        str(windowSizeMS),
+                        f"errorFig_2d_bayes_{args.phase}_inferring.png",
+                    )
+                )
+                or args.redo
+            ):
+                print("\nTesting inference set")
+                timeStepPred = np.squeeze(
+                    np.array(
+                        pd.read_csv(
+                            os.path.join(
+                                ProjectPath.folderResult,
+                                str(windowSizeMS),
+                                f"timeStepsPred_{args.phase}.csv",
+                            )
+                        ).values[:, 1:],
+                        dtype=np.float64,
+                    )
+                ).flatten()
+                outputs = TrainerBayes.test_as_NN(
+                    DataHelper.fullBehavior,
+                    bayesMatrices,
+                    timeStepPred,
+                    windowSizeMS=windowSizeMS,
+                    useTrain=False,
+                    useTest=True,
+                    l_function=l_function,
+                    phase=args.phase,
+                )
+                print_results.print_results(
+                    TrainerBayes.folderResult,
+                    windowSizeMS=windowSizeMS,
+                    results=outputs,
+                    typeDec="bayes",
+                    show=show_figures,
+                    lossSelection=0.1,
+                    euclidean=False,
+                    target=args.target,
+                    phase=args.phase,
+                    training_data=TrainerBayes.training_data,
+                    useSpeedMask=True,
+                    l_function=l_function,
+                    force=args.redo,
+                )
+
+            if (
+                not os.path.exists(
+                    os.path.join(
+                        TrainerBayes.folderResult,
+                        str(windowSizeMS),
+                        "bayes_featurePred_cond.csv",
+                    )
+                )
+                or args.redo
+            ):
+                print("\nTesting conditioning set")
+                timeStepPred = np.squeeze(
+                    np.array(
+                        pd.read_csv(
+                            os.path.join(
+                                ProjectPath.folderResult,
+                                str(windowSizeMS),
+                                "timeStepsPred_cond.csv",
+                            )
+                        ).values[:, 1:],
+                        dtype=np.float64,
+                    )
+                ).flatten()
+                outputs = TrainerBayes.test_as_NN(
+                    DataHelper_cond.fullBehavior,
+                    bayesMatrices,
+                    timeStepPred,
+                    windowSizeMS=windowSizeMS,
+                    useTrain=True,
+                    useTest=True,
+                    l_function=l_function,
+                    phase="cond",
+                )
+                print_results.print_results(
+                    TrainerBayes.folderResult,
+                    windowSizeMS=windowSizeMS,
+                    results=outputs,
+                    typeDec="bayes",
+                    show=show_figures,
+                    lossSelection=0.1,
+                    euclidean=False,
+                    target=args.target,
+                    phase="cond",
+                    training_data=TrainerBayes.training_data,
+                    useSpeedMask=True,
+                    l_function=l_function,
+                    force=args.redo,
+                )
+
+            if (
+                not os.path.exists(
+                    os.path.join(
+                        TrainerBayes.folderResult,
+                        str(windowSizeMS),
+                        "bayes_featurePred_post.csv",
+                    )
+                )
+                or args.redo
+            ):
+                print("\nTesting post set")
+                timeStepPred = np.squeeze(
+                    np.array(
+                        pd.read_csv(
+                            os.path.join(
+                                ProjectPath.folderResult,
+                                str(windowSizeMS),
+                                "timeStepsPred_post.csv",
+                            )
+                        ).values[:, 1:],
+                        dtype=np.float64,
+                    )
+                ).flatten()
+                outputs = TrainerBayes.test_as_NN(
+                    DataHelper_post.fullBehavior,
+                    bayesMatrices,
+                    timeStepPred,
+                    windowSizeMS=windowSizeMS,
+                    useTrain=True,
+                    useTest=True,
+                    l_function=l_function,
+                    phase="post",
+                )
+                print_results.print_results(
+                    TrainerBayes.folderResult,
+                    windowSizeMS=windowSizeMS,
+                    results=outputs,
+                    typeDec="bayes",
+                    show=show_figures,
+                    lossSelection=0.1,
+                    euclidean=False,
+                    target=args.target,
+                    phase="post",
+                    training_data=TrainerBayes.training_data,
+                    useSpeedMask=True,
+                    l_function=l_function,
+                    force=args.redo,
+                )
+        except FileNotFoundError:
+            raise ValueError(
+                'To run the bayes mode as NN, you need to run the "NN" trainer first.'
+            )
+
+        if args.test_sleep:
+            if (
+                not os.path.exists(
+                    os.path.join(
+                        TrainerBayes.folderResultSleep,
+                        str(windowSizeMS),
+                        "PostSleep",
+                        "bayes_featurePred.csv",
+                    )
+                )
+                or args.redo
+            ):
+                print("Testing sleep set")
+                # Test sleep as NN
+                TrainerBayes.test_sleep_as_NN(
+                    DataHelper.fullBehavior,
+                    bayesMatrices,
+                    windowSizeMS=windowSizeMS,
+                    l_function=l_function,
+                )
+
+        # Save and create alignment tools
+        from neuroencoders.importData.compareSpikeFiltering import WaveFormComparator
+
+        print(
+            f"saving alignment tools with striding factor {strideFactor} for window {windowSizeMS}ms"
+        )
+        ### Compare and align trainset waveforms
+        WFCTrain = WaveFormComparator(
+            projectPath=ProjectPath,
+            params=Parameters,
+            behavior_data=DataHelper.fullBehavior,
+            useTrain=True,
+            useTest=False,
+            windowSizeMS=windowSizeMS,
+            phase=args.phase,
+            strideFactor=strideFactor,
+        )
+        WFCTrain.save_alignment_tools(
+            TrainerBayes, l_function, windowSizeMS=windowSizeMS, redo=True
+        )
+        ### Compare and align trainset waveforms
+        WFCTrainTest = WaveFormComparator(
+            ProjectPath,
+            Parameters,
+            DataHelper.fullBehavior,
+            useTrain=True,
+            useTest=True,
+            useAll=True,
+            windowSizeMS=windowSizeMS,
+            phase="training",
+            strideFactor=strideFactor,
+        )
+        WFCTrainTest.save_alignment_tools(
+            TrainerBayes, l_function, windowSizeMS=windowSizeMS, redo=True
+        )
+        WFCTest = WaveFormComparator(
+            ProjectPath,
+            Parameters,
+            DataHelper.fullBehavior,
+            useTrain=False,
+            useTest=True,
+            windowSizeMS=windowSizeMS,
+            phase=args.phase,
+            strideFactor=strideFactor,
+        )
+        WFCTest.save_alignment_tools(
+            TrainerBayes, l_function, windowSizeMS=windowSizeMS, redo=True
+        )
+
+        ### Compare and align conditioning waveforms
+        WFCCond = WaveFormComparator(
+            ProjectPath,
+            Parameters,
+            DataHelper_cond.fullBehavior,
+            useTrain=True,
+            useTest=True,
+            useAll=True,
+            windowSizeMS=windowSizeMS,
+            phase="cond",
+            strideFactor=strideFactor,
+        )
+        WFCCond.save_alignment_tools(
+            TrainerBayes, l_function, windowSizeMS=windowSizeMS, redo=True
+        )
+
+        ### Compare and align PostTests waveforms
+        WFCPost = WaveFormComparator(
+            ProjectPath,
+            Parameters,
+            DataHelper_post.fullBehavior,
+            useTrain=True,
+            useTest=True,
+            useAll=True,
+            windowSizeMS=windowSizeMS,
+            phase="post",
+            strideFactor=strideFactor,
+        )
+        WFCPost.save_alignment_tools(
+            TrainerBayes, l_function, windowSizeMS=windowSizeMS, redo=True
+        )
+    elif mode == "ann":
+        # Create data
+        import neuroencoders.importData.juliaData as jD
+        from neuroencoders.fullEncoder import an_network as Training
+        from neuroencoders.importData.juliaData.julia_data_parser import (
+            julia_spike_filter,
+        )
+        from neuroencoders.openEphysExport.generate_json import generate_json
+
+        folderCode = os.path.dirname(jD.__file__) + os.path.sep
+
+        print(
+            f"Starting julia spike filtering with striding {windowStride}s and window size {args.window}s (stride factor was fixed at {strideFactor})."
+        )
+        julia_spike_filter(
+            ProjectPath,
+            folderCode,
+            windowSize=windowSizeMS / 1000,
+            windowStride=windowStride,  # This way the striding is always 36ms-based
+            strideFactor=strideFactor,
+            redo=False,
+            BUFFERSIZE=216000,
+        )
+
+        # Network
+        max_nb_spikes = get_max_nb_spikes(windowSizeMS)
+
+        NNTrainer = Training.LSTMandSpikeNetwork(
+            ProjectPath,
+            Parameters,
+            deviceName=deviceName,
+            debug=debug,
+            phase=args.phase,
+            isTransformer=Parameters.isTransformer,
+            verbose=True,
+            behaviorData=DataHelper.fullBehavior,
+            alpha=Parameters.denseweightAlpha,
+            linearizer=Linearizer,
+            jit_compile=False,
+            max_nb_spikes=max_nb_spikes,
+        )
+
+        if (
+            not os.path.exists(
+                os.path.join(
+                    NNTrainer.folderResult,
+                    str(windowSizeMS),
+                    "featurePred_training.csv",
+                )
+            )
+            or args.redo
+        ):
+            num_augmentations = args.num_augmentations
+            if Parameters.dataAugmentation:
+                print("num_augmentations", num_augmentations)
+                if num_augmentations is None:
+                    num_augmentations = 3
+            NNTrainer.train(
+                DataHelper.fullBehavior,
+                windowSizeMS=windowSizeMSlist,
+                isPredLoss=isPL,
+                earlyStop=args.early_stop,
+                load_model=False,
+                fine_tune=False,
+                l_function=l_function,
+                num_augmentations=num_augmentations,
+                strideFactor=strideFactor,
+                normalize=True,
+            )
+            T = None
+
+        if Parameters.GaussianHeatmap and (
+            not (
+                os.path.exists(
+                    os.path.join(
+                        NNTrainer.folderResult,
+                        str(windowSizeMS),
+                        "errorFig_2d_NN_training_inferring.png",
+                    )
+                )
+                and os.path.exists(
+                    os.path.join(
+                        NNTrainer.folderResult,
+                        str(windowSizeMS),
+                        "errorFig_2d_NN_post_inferring.png",
+                    )
+                )
+                and os.path.exists(
+                    os.path.join(
+                        NNTrainer.folderResult,
+                        str(windowSizeMS),
+                        "errorFig_2d_NN_cond_inferring.png",
+                    )
+                )
+            )
+            or args.redo
+        ):
+            print("Will now run temperature scaling for gaussian heatmap")
+            T = NNTrainer.test(
+                DataHelper.fullBehavior,
+                fit_temperature=True,
+                useTrain=True,
+                useTest=False,
+                phase="fit_temperature",
+                windowSizeMS=windowSizeMS,
+                useSpeedFilter=True,
+                isPredLoss=isPL,
+                strideFactor=strideFactor,
+            )
+        # now run the fancy inference
+        if (
+            not os.path.exists(
+                os.path.join(
+                    NNTrainer.folderResult,
+                    str(windowSizeMS),
+                    "errorFig_2d_NN_training_inferring.png",
+                )
+            )
+            or args.redo
+        ):
+            print("Testing training set")
+            NNTrainer.test(
+                DataHelper.fullBehavior,
+                windowSizeMS=windowSizeMS,
+                isPredLoss=isPL,
+                l_function=l_function,
+                useSpeedFilter=False,
+                phase="training",
+                useTrain=True,
+                useTest=False,
+                template=args.phase,
+                T_scaling=T,
+                strideFactor=strideFactor,
+                extract_spikes_counts=True,
+            )
+            print_results.print_results(
+                NNTrainer.folderResult,
+                windowSizeMS=windowSizeMS,
+                show=show_figures,
+                lossSelection=0.5,
+                euclidean=False,
+                target=args.target,
+                phase="training",
+                useSpeedMask=True,
+                training_data=NNTrainer.training_data,
+                force=args.redo,
+                l_function=l_function,
+            )
+
+        if (
+            not os.path.exists(
+                os.path.join(
+                    NNTrainer.folderResult,
+                    str(windowSizeMS),
+                    f"errorFig_2d_NN_{args.phase}_inferring.png",
+                )
+            )
+            or args.redo
+        ):
+            print("Testing inference set")
+            NNTrainer.test(
+                DataHelper.fullBehavior,
+                windowSizeMS=windowSizeMS,
+                isPredLoss=isPL,
+                l_function=l_function,
+                useSpeedFilter=False,
+                phase=args.phase,
+                useTrain=False,
+                useTest=True,
+                template=args.phase,
+                T_scaling=T,
+                strideFactor=strideFactor,
+                extract_spikes_counts=True,
+            )
+            print_results.print_results(
+                NNTrainer.folderResult,
+                windowSizeMS=windowSizeMS,
+                show=show_figures,
+                lossSelection=0.5,
+                euclidean=False,
+                force=args.redo,
+                target=args.target,
+                phase=args.phase,
+                training_data=NNTrainer.training_data,
+                useSpeedMask=True,
+                l_function=l_function,
+            )
+
+        if (
+            not os.path.exists(
+                os.path.join(
+                    NNTrainer.folderResult,
+                    str(windowSizeMS),
+                    "featurePred_cond.csv",
+                )
+            )
+            or args.redo
+        ):
+            print("Testing conditioning set")
+            NNTrainer.test(
+                DataHelper_cond.fullBehavior,
+                windowSizeMS=windowSizeMS,
+                isPredLoss=isPL,
+                l_function=l_function,
+                useSpeedFilter=False,
+                phase="cond",
+                useTrain=True,
+                useTest=True,
+                T_scaling=T,
+                strideFactor=strideFactor,
+                extract_spikes_counts=True,
+            )
+
+            print_results.print_results(
+                NNTrainer.folderResult,
+                windowSizeMS=windowSizeMS,
+                show=show_figures,
+                lossSelection=0.5,
+                euclidean=False,
+                target=args.target,
+                phase="cond",
+                training_data=NNTrainer.training_data,
+                useSpeedMask=True,
+                l_function=l_function,
+                force=args.redo,
+            )
+
+        if (
+            not os.path.exists(
+                os.path.join(
+                    NNTrainer.folderResult,
+                    str(windowSizeMS),
+                    "featurePred_post.csv",
+                )
+            )
+            or args.redo
+        ):
+            print("Testing PostTest set")
+            NNTrainer.test(
+                DataHelper_post.fullBehavior,
+                windowSizeMS=windowSizeMS,
+                isPredLoss=isPL,
+                l_function=l_function,
+                useSpeedFilter=False,
+                phase="post",
+                useTrain=True,
+                useTest=True,
+                T_scaling=T,
+                strideFactor=strideFactor,
+                extract_spikes_counts=True,
+            )
+
+            print_results.print_results(
+                NNTrainer.folderResult,
+                windowSizeMS=windowSizeMS,
+                show=show_figures,
+                lossSelection=0.5,
+                euclidean=False,
+                target=args.target,
+                phase="post",
+                training_data=NNTrainer.training_data,
+                useSpeedMask=True,
+                l_function=l_function,
+                force=args.redo,
+            )
+
+        if args.test_sleep and (
+            not os.path.exists(
+                os.path.join(
+                    NNTrainer.folderResultSleep,
+                    str(windowSizeMS),
+                    "PostSleep",
+                    "featurePred.csv",
+                )
+            )
+            or args.redo
+        ):
+            NNTrainer.testSleep(
+                behaviorData=DataHelper.fullBehavior,
+                l_function=l_function,
+                windowSizeMS=windowSizeMS,
+                isPredLoss=isPL,
+                strideFactor=strideFactor,
+                T_scaling=T,
+                # TODO: add window Size Decoder --> decode small windows with big window trained model
+            )
+
+        if args.plot_id or (
+            not os.path.exists(
+                os.path.join(
+                    ProjectPath.experimentPath,
+                    "figures",
+                    f"summary_id_card_{windowSizeMS}ms.pdf",
+                )
+            )
+            or args.redo
+        ):
+            import neuroencoders.utils.MOBS_Functions as mf
+
+            Dir = mf.path_for_experiments_df("Sub", args.name)
+            if "1199_MFB" not in ProjectPath.baseName:
+                mouse_full_name = os.path.basename(
+                    os.path.dirname(ProjectPath.baseName)
+                )
+                exp_index = None
+            else:
+                mouse_full_name = os.path.basename(
+                    os.path.dirname(os.path.dirname(ProjectPath.baseName))
+                )
+                exp_index = os.path.dirname(ProjectPath.baseName).split("exp")[-1]
+
+            parts = mouse_full_name.split("_")
+            if len(parts) < 2:
+                warn(
+                    f"Unexpected mouse_full_name format '{mouse_full_name}'. "
+                    "Expected at least one underscore to separate mouse_name and manipe."
+                )
+                mouse_name = mouse_full_name.strip("M")
+                manipe = ""
+            else:
+                mouse_name = parts[0].strip("M")
+                manipe = parts[1]
+            curr = mf.Mouse_Results(
+                Dir,
+                mouse_name=mouse_name,
+                manipe=manipe,
+                nameExp=args.name,
+                exp_index=exp_index,
+                target=args.target,
+                nEpochs=Parameters.nEpochs,
+                phase=args.phase,
+                deviceName=deviceName,
+                windows=windowSizeMS,
+                isTransformer=not args.lstm,
+                denseweight=args.dense_weight,
+                transform_w_log=args.transform_w_log,
+                which="both",
+                load_last_bayes=True,
+                load_bayesMatrices=True,
+                isPredLoss=isPL,
+                GaussianHeatmap=Parameters.GaussianHeatmap,
+            )
+            curr.load_data(
+                suffixes=["_pre", "_cond", "_post", "_training"],
+                load_pickle=True,
+                extract_spikes_counts=True,
+            )
+            curr.load_bayes(
+                suffixes=["_pre", "_cond", "_post", "_training"],
+                load_pickle=True,
+                target="pos",
+                redo=windowSizeMS == 36,
+            )
+            curr.fig_summary_id_card(
+                timeWindow=windowSizeMS,
+                DataHelper=DataHelper,
+                open=True,
+                block=False,
+                mouse_name=curr.mouse_name + curr.manipe,
+                dimOutput=2 if "lin" in args.target.lower() else 1,
+            )
+
+        NNTrainer.clear_session()
+
+        # Create json
+        if isPL:
+            modelPath = os.path.join(
+                NNTrainer.folderModels,
+                str(windowSizeMS),
+                "savedModels",
+                "predLossModel",
+            )
+        else:
+            modelPath = os.path.join(
+                NNTrainer.folderModels,
+                str(windowSizeMS),
+                "savedModels",
+                "fullModel",
+            )
+        # WARNING: for now modelPath is not used due to issues in the generate_json function.
+        # Indeed the generate & load from json (see Decoder class) already look for the str(window), savedModels...
+        # Will use NNTrainer.folderModels instead
+        print(ProjectPath.json)
+        generate_json(ProjectPath, NNTrainer.folderModels, DataHelper.list_channels)
+        print("Saved json file for Julia thresholds and checkpoints.")
+
+    elif mode == "decode":
+        from neuroencoders.decoder import decode
+        from neuroencoders.importData.juliaData.julia_data_parser import (
+            julia_spike_filter,
+        )
+
+        if not os.path.isfile(ProjectPath.json):
+            sys.exit(
+                "No .json file was found to pick up the network to decode."
+                + " Please verify that you encoded the weights, and that "
+                + "you json file has the same name as basefile.dat"
+            )
+        else:
+            # Create data
+            folderCode = os.path.dirname(os.path.realpath(__file__)) + os.path.sep
+            # Right now, the thresholds are not the same
+            windowStride = args.striding
+            strideFactor = round(windowSizeMS / (1000 * windowStride), 4)
+            # check if windowStride is an integer, if not raise an error
+            if not strideFactor.is_integer():
+                raise ValueError(
+                    "The window size is not compatible with the 36ms stride."
+                )
+            julia_spike_filter(
+                ProjectPath,
+                folderCode,
+                windowSize=windowSizeMS / 1000,
+                windowStride=windowStride,  # This way the striding is always 36ms-based
+            )
+            # Decode
+            Decoder = decode.Decoder(
+                ProjectPath,
+                Parameters,
+                windowSizeMS=windowSizeMS,
+                deviceName=deviceName,
+            )
+            outputs = Decoder.test(
+                DataHelper.fullBehavior,
+                l_function=l_function,
+                windowSizeMS=windowSizeMS,
+            )
+            print_results.print_results(Decoder.folderResult, windowSizeMS=windowSizeMS)
+
+    elif mode == "compare":
+        from neuroencoders.fullEncoder import an_network as Training
+        from neuroencoders.importData.compareSpikeFiltering import WaveFormComparator
+        from neuroencoders.importData.juliaData.julia_data_parser import (
+            julia_spike_filter,
+        )
+        from neuroencoders.openEphysExport.generate_json import generate_json
+        from neuroencoders.resultAnalysis import paper_figures
+        from neuroencoders.simpleBayes import decode_bayes as BayesTrainer
+
+        ### Bayes
+        TrainerBayes = BayesTrainer.Trainer(
+            ProjectPath, maze_params=DataHelper.maze_coords, phase=args.phase
+        )
+        bayesMatrices = TrainerBayes.train_order_by_pos(
+            DataHelper.fullBehavior, l_function=l_function
+        )
+
+        ### ANN TODO: if exists
+        folderCode = os.path.dirname(os.path.realpath(__file__)) + os.path.sep
+        julia_spike_filter(
+            ProjectPath,
+            folderCode,
+            windowSize=windowSizeMS / 1000,
+            windowStride=windowStride,  # This way the striding is always 36ms-based
+            redo=False,
+            BUFFERSIZE=144000,
+        )
+        # Network
+        NNTrainer = Training.LSTMandSpikeNetwork(
+            ProjectPath,
+            Parameters,
+            deviceName=deviceName,
+            debug=debug,
+        )
+        NNTrainer.fix_linearizer(Linearizer.mazePoints, Linearizer.tsProj)
+        NNTrainer.train(DataHelper.fullBehavior, windowSizeMS=windowSizeMS)
+        NNTrainer.test(
+            DataHelper.fullBehavior, l_function=l_function, windowSizeMS=windowSizeMS
+        )
+        if isPL:
+            modelPath = os.path.join(
+                NNTrainer.folderModels,
+                str(windowSizeMS),
+                "savedModels",
+                "predLossModel.keras",
+            )
+        else:
+            modelPath = os.path.join(
+                NNTrainer.folderModels,
+                str(windowSizeMS),
+                "savedModels",
+                "fullModel.keras",
+            )
+        generate_json(ProjectPath, modelPath, DataHelper.list_channels)
+
+        ### Compare and align waveforms
+        WFCTrain = WaveFormComparator(
+            ProjectPath,
+            Parameters,
+            DataHelper.fullBehavior,
+            useTrain=True,
+            useTest=False,
+            windowSizeMS=windowSizeMS,
+            phase=args.phase,
+        )
+        WFCTrain.save_alignment_tools(
+            TrainerBayes, l_function, windowSizeMS=windowSizeMS
+        )
+        WFCTest = WaveFormComparator(
+            ProjectPath,
+            Parameters,
+            DataHelper.fullBehavior,
+            useTrain=False,
+            useTest=True,
+            windowSizeMS=windowSizeMS,
+            phase=args.phase,
+        )
+        WFCTest.save_alignment_tools(
+            TrainerBayes, l_function, windowSizeMS=windowSizeMS
+        )
+
+        ### Figures
+        figures = paper_figures.PaperFigures(
+            ProjectPath,
+            DataHelper.fullBehavior,
+            TrainerBayes,
+            l_function,
+            bayesMatrices=bayesMatrices,
+            phase=args.phase,
+        )
+        figures.load_data()
+        figures.load_bayes()
+        figures.fig_example_linear(block=False)
+        figures.hist_linerrors(block=False, speed="fast")
+        figures.nnVSbayes(block=False, speed="fast")
+        figures.predLoss_vs_trueLoss(block=False, speed="fast")
+        figures.fig_example_2d(block=False, speed="fast")
+        figures.predLoss_linError(block=False, speed="fast")
+        figures.predLoss_euclError(block=False, speed="fast")
+        figures.fig_example_linear_filtered(block=False)
+
+
+if __name__ == "__main__":
+    print()
+    import argparse
+
+    Parser = argparse.ArgumentParser(
+        description="Creating and training an agent "
+        + "to decode high level features from electrophysiology data."
+    )
+    subparsers = Parser.add_subparsers(
+        dest="mode",
+        title="modes",
+        description="all existing modes of encoding",
+        help="selects an encoding mode"
+        + ". For more information type the mode name between neuroencoder and -h",
+    )
+
+    for cmd in ["ann", "bayes", "compare", "decode"]:
+        p = subparsers.add_parser(cmd)
+        p.add_argument("path", help="path to xml file", type=os.path.abspath)
+        if cmd == "decode":
+            p.add_argument("jsonPath", type=str, help="path to json file")
+        p.add_argument(
+            "-w",
+            "--window",
+            type=float,
+            nargs="+",
+            help=(
+                "defines one or more window sizes, in seconds. "
+                "This option accepts multiple values and returns a list. "
+                "Defaults to [0.108]"
+            ),
+            default=[0.108],
+        )
+        p.add_argument(
+            "-n",
+            "--name",
+            type=str,
+            help="name of the folder where all models and results will be stored",
+            default="Current_results",
+        )
+
+        p.add_argument(
+            "-e",
+            "--epochs",
+            type=int,
+            help="number of epochs for training. Defaults to 100",
+            default=100,
+        )
+
+        p.add_argument(
+            "-p",
+            "--phase",
+            type=str,
+            help="Use only one phase of experiments for training/selectioning the epochs. Will overwrite the epochs",
+            choices=[
+                "all",
+                "pre",
+                "hab",
+                "preNoHab",
+                "cond",
+                "post",
+                "extinction",
+                "postNoExtinction",
+            ],
+            default=None,
+        )
+
+        p.add_argument(
+            "-r",
+            "--redo",
+            action="store_true",
+            help="Force and redo all the parameters settings (speed filter, epochs selection, etc.)",
+        )
+        p.add_argument(
+            "-t",
+            "--target",
+            type=str,
+            help="name of feature to be decoded. Defaults are Xtsd and Ytsd. "
+            + "Must be a tsd variable from behavResources.mat",
+            default="pos",
+            choices=[
+                "pos",
+                "lin",
+                "linear",
+                "LinAndThigmo",
+                "linAndThigmo",
+                "LinAndDirection",
+                "Direction",
+                "direction",
+                "linandheaddirection",
+                "linandspeed",
+                "PosAndDirection",
+                "Posandheaddirection",
+                "Posandspeed",
+                "PosAndHeadDirection",
+                "Posandheaddirectionandspeed",
+                "PosAndHeadDirectionAndThigmo",
+                "PosAndDirectionAndThigmo",
+            ],
+        )
+        p.add_argument(
+            "-s",
+            "--striding",
+            type=float,
+            help="defines the striding of the window, in seconds. Defaults to None",
+            default=None,
+        )
+        # add optional argument to select striding factor instead of striding and override striding
+        p.add_argument(
+            "-sfact",
+            "--striding_factor",
+            type=int,
+            help="defines the striding factor of the window. "
+            + "If selected, overrides the striding argument. "
+            + "Defaults to None",
+            default=None,
+        )
+        p.add_argument(
+            "-sleep",
+            "--test_sleep",
+            action="store_true",
+            help="defines whether to test the decoder on the Pre and Post sleep phases",
+        )
+        p.add_argument(
+            "-nf",
+            "--n_features",
+            type=int,
+            help="dimension of CNN output for 1 spike group. Defaults to None (will use 32 or 64 depending on params default)",
+            default=None,
+        )
+        p.add_argument(
+            "-lstm",
+            "--lstm",
+            action="store_true",
+            help="defines whether to use a lstm network instead of transformer",
+        )
+        p.add_argument(
+            "-pl",
+            "--predicted_loss",
+            action="store_true",
+            help="defines whether another, predLoss only, "
+            + "network will be trained on the piece of data",
+        )
+        p.add_argument(
+            "-log",
+            "--transform_w_log",
+            action="store_true",
+            help="defines whether the uncertainty loss is majored with a log function or stays euclidian",
+        )
+        p.add_argument(
+            "-dw",
+            "--dense_weight",
+            action="store_true",
+            help="defines whether the dense weight loss should be used or not",
+        )
+        p.add_argument(
+            "-es",
+            "--early_stop",
+            action="store_true",
+            help="defines whether to use early stopping during training",
+        )
+        p.add_argument(
+            "-ml",
+            "--mixed_loss",
+            action="store_true",
+            help="defines whether the loss is full euclidean loss, or is weighted by linear distance (to deal with corner issues)",
+        )
+        p.add_argument(
+            "-ng",
+            "--no_gaussian",
+            action="store_true",
+            help="defines whether we train on gaussian heatmaps or on simple (x,y) positions",
+        )
+        p.add_argument(
+            "-df",
+            "--dim_factor",
+            type=int,
+            help="factor to multiply the CNN output feature dimension before feeding it to the transformer. Defaults to 1 (no multiplication)",
+            default=1,
+        )
+        p.add_argument(
+            "-ntransfo",
+            "--n_transformers",
+            type=int,
+            help="number of transformers to be stacked. Defaults to 4",
+            default=4,
+        )
+        p.add_argument(
+            "-naug",
+            "--num_augmentations",
+            type=int,
+            help="number of augmentations to be used during training. Defaults to 5 if window<0.504s, else 3",
+            default=None,
+        )
+        p.add_argument(
+            "-loss",
+            "--loss_type",
+            type=str,
+            help="type of loss to be used for Gaussian Heatmap. Defaults to safe_kl",
+            choices=["safe_kl", "wasserstein", "kl", "weighted"],
+            default="safe_kl",
+        )
+        p.add_argument(
+            "-NoProjectTransfo",
+            "--no_project_transformer",
+            action="store_true",
+            help="defines whether to use a linear projection before the transformer or not",
+        )
+        p.add_argument(
+            "-rdense",
+            "--reduce_dense",
+            action="store_true",
+            help="defines whether the CNN has fewer dense layers (1 instead of 3)",
+        )
+        p.add_argument(
+            "-nocnn",
+            "--no_cnn",
+            action="store_true",
+            help="defines whether the CNN has no CNN layers (output is directly passed to transformer after dense layer for nChannels uniformization)",
+        )
+        p.add_argument(
+            "-contrast",
+            "--contrastive_loss",
+            action="store_true",
+            help="defines whether to use contrastive loss alongside the main loss",
+        )
+
+        if cmd == "bayes":
+            p.add_argument(
+                "-fp",
+                "--flat_prior",
+                action="store_true",
+                help="defines whether to use a flat prior for bayesian decoding",
+            )
+
+        if cmd != "bayes":
+            p.add_argument(
+                "-g",
+                "--gpu",
+                action="store_true",
+                help="run computations on gpu. Requires specific installation.",
+            )
+            p.add_argument(
+                "-id",
+                "--plot_id",
+                action="store_true",
+                help="plot id card of the mouse at the end of the run.",
+            )
+
+    args = Parser.parse_args()
+
+    print()
+    import shutil
+
+    rows, columns = shutil.get_terminal_size()
+    print("|| neuroEncoder by MOBS ||".center(rows))
+    print("may 2020 - march 2022".center(rows))
+    print("email: t.balenbois@gmail.com && bryzgalovdm@gmail.com".center(rows))
+    print()
+    print()
+    print("{:=^40}".format("PARAMETERS").center(rows))
+    for k, v in vars(args).items():
+        print(f"{k}: {v}".center(rows))
+    print("{:=^40}".format("END").center(rows))
+
+    # TODO:  Check if split is not too optimistic
+    if args.mode == "decode":
+        print("Decoding of full dataset \n")
+
+    if not (
+        os.path.isfile(
+            os.path.abspath(
+                os.path.expanduser(
+                    os.path.split(args.path)[0] + os.path.sep + "nnBehavior.mat"
+                )
+            )
+        )
+    ):
+        # Get the tsd feature, i.e. a nnBehavior.mat file from the tsd feature.
+        # The target is the name of the feature to be decoded, will default to the position.
+        subprocess.run(
+            [
+                os.path.join(os.path.dirname(__file__), "getTsdFeature.sh"),
+                os.path.abspath(os.path.expanduser(args.path.strip("'"))),
+                "'" + args.target + "'",
+            ]
+        )
+    if not (
+        os.path.isfile(
+            os.path.abspath(
+                os.path.expanduser(
+                    os.path.split(args.path)[0]
+                    + os.path.sep
+                    + "optional_nnBehavior.mat"
+                )
+            )
+        )
+    ):
+        # Get the tsd feature, i.e. a nnBehavior.mat file from the tsd feature.
+        # The target is the name of the feature to be decoded, will default to the position.
+        subprocess.run(
+            [
+                os.path.join(os.path.dirname(__file__), "addTsdFeature.sh"),
+                os.path.abspath(os.path.expanduser(args.path.strip("'"))),
+                "'" + args.target + "'",
+            ]
+        )
+    print()
+
+    main(args)
+
+    print()
+    print()
+    print("Algo has done what it wanted to do.")
