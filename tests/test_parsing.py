@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import torch
 
-from neuroencoders.fullEncoder.nnUtils_torch import parse_serialized_sequence_torch
+from torch_neuroencoders.fullEncoder.nnUtils_torch import parse_serialized_sequence_torch
 
 
 def create_dummy_parsed_tensors(params):

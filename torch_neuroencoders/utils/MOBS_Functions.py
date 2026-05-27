@@ -13,7 +13,7 @@ from warnings import warn
 import dill as pickle
 import matplotlib.pyplot as plt
 import numpy as np
-from neuroencoders.utils.backend import pd
+from torch_neuroencoders.utils.backend import pd
 import seaborn as sns
 from matplotlib.cbook import boxplot_stats
 from pynapple import (
@@ -30,15 +30,15 @@ from scipy.stats import pearsonr, spearmanr
 from statannotations.Annotator import Annotator
 from tqdm import tqdm
 
-from neuroencoders.importData.epochs_management import get_epochs_mask, inEpochsMask
-from neuroencoders.importData.rawdata_parser import get_behavior
-from neuroencoders.resultAnalysis import print_results
-from neuroencoders.resultAnalysis.paper_figures import PaperFigures, TuningCurvesPlotter
-from neuroencoders.transformData.linearizer import UMazeLinearizer
-from neuroencoders.utils.PathForExperiments import path_for_experiments
-from neuroencoders.utils.func_wrappers import timing
-from neuroencoders.utils.global_classes import DataHelper as DataHelperClass
-from neuroencoders.utils.global_classes import (
+from torch_neuroencoders.importData.epochs_management import get_epochs_mask, inEpochsMask
+from torch_neuroencoders.importData.rawdata_parser import get_behavior
+from torch_neuroencoders.resultAnalysis import print_results
+from torch_neuroencoders.resultAnalysis.paper_figures import PaperFigures, TuningCurvesPlotter
+from torch_neuroencoders.transformData.linearizer import UMazeLinearizer
+from torch_neuroencoders.utils.PathForExperiments import path_for_experiments
+from torch_neuroencoders.utils.func_wrappers import timing
+from torch_neuroencoders.utils.global_classes import DataHelper as DataHelperClass
+from torch_neuroencoders.utils.global_classes import (
     Params,
     Project,
     SpatialConstraintsMixin,
@@ -54,7 +54,7 @@ plt.style.use("neuroencoders.mobs")
 def Info_LFP(LFP_directory, Info_name="InfoLFP"):
     from os.path import join
 
-    from neuroencoders.utils.backend import pd
+    from torch_neuroencoders.utils.backend import pd
     from scipy.io import loadmat
 
     # Loading .mat file
@@ -577,7 +577,7 @@ def dict_to_dataframe(Dir: Dict[str, Any]) -> pd.DataFrame:
         df_dict["group"] = [None] * n_experiments
 
     # Create a DataFrame using the configured backend (pandas or cuDF)
-    from neuroencoders.utils.backend import pd as backend_pd
+    from torch_neuroencoders.utils.backend import pd as backend_pd
 
     df = backend_pd.DataFrame(df_dict)
 
@@ -1214,11 +1214,11 @@ class Mouse_Results(Params, PaperFigures, SpatialConstraintsMixin):
 
 
         """
-        from neuroencoders.fullEncoder.an_network import (
+        from torch_neuroencoders.fullEncoder.an_network import (
             LSTMandSpikeNetwork as NNTrainer,
         )
-        from neuroencoders.simpleBayes.decode_bayes import DecoderConfig
-        from neuroencoders.simpleBayes.decode_bayes import Trainer as BayesTrainer
+        from torch_neuroencoders.simpleBayes.decode_bayes import DecoderConfig
+        from torch_neuroencoders.simpleBayes.decode_bayes import Trainer as BayesTrainer
 
         if hasattr(self, "deviceName"):
             deviceName = kwargs.pop("deviceName", self.deviceName)
@@ -1226,7 +1226,7 @@ class Mouse_Results(Params, PaperFigures, SpatialConstraintsMixin):
             deviceName = kwargs.pop("deviceName", "gpu")
 
         if deviceName.lower() == "gpu" or deviceName.lower() == "cpu":
-            from neuroencoders.utils.management import manage_devices
+            from torch_neuroencoders.utils.management import manage_devices
 
             self.deviceName = manage_devices(
                 deviceName.upper(),
@@ -1577,7 +1577,7 @@ class Mouse_Results(Params, PaperFigures, SpatialConstraintsMixin):
             "_" + phase if phase is not None and not phase.startswith("_") else phase
         )
 
-        from neuroencoders.importData.gui_elements import AnimatedPositionPlotter
+        from torch_neuroencoders.importData.gui_elements import AnimatedPositionPlotter
 
         data_helper = kwargs.pop("data_helper", None)
         if data_helper is None:
@@ -2171,7 +2171,7 @@ class Mouse_Results(Params, PaperFigures, SpatialConstraintsMixin):
                 sleepName (List[str]): List of sleep names to consider for alignment.
                 phase (str): phase to use to compute the tuning curves and spike alignment.
         """
-        from neuroencoders.importData.compareSpikeFiltering import WaveFormComparator
+        from torch_neuroencoders.importData.compareSpikeFiltering import WaveFormComparator
 
         force = kwargs.get("force", False)
         useTrain = kwargs.pop("useTrain", False)
@@ -3791,7 +3791,7 @@ class Results_Loader(TuningCurvesPlotter):
         folder = folder or getattr(self, "folderFigures", None)
         suffixes = suffixes or getattr(self, "suffixes", [""])
         # Try to get ANN loss layer
-        from neuroencoders.fullEncoder.nnUtils import GaussianHeatmapLosses
+        from torch_neuroencoders.fullEncoder.nnUtils import GaussianHeatmapLosses
 
         try:
             loss_layer = GaussianHeatmapLosses(
@@ -3932,7 +3932,7 @@ class Results_Loader(TuningCurvesPlotter):
         suffixes = suffixes or getattr(self, "suffixes", [""])
 
         # --- Try to get ANN loss layer once ---
-        from neuroencoders.fullEncoder.nnUtils import GaussianHeatmapLosses
+        from torch_neuroencoders.fullEncoder.nnUtils import GaussianHeatmapLosses
 
         try:
             loss_layer = GaussianHeatmapLosses(
@@ -4572,7 +4572,7 @@ class Results_Loader(TuningCurvesPlotter):
 
         import matplotlib.pyplot as plt
         import numpy as np
-        from neuroencoders.utils.backend import pd
+        from torch_neuroencoders.utils.backend import pd
         import seaborn as sns
         from scipy.stats import linregress
 
@@ -4723,7 +4723,7 @@ class Results_Loader(TuningCurvesPlotter):
 
         import matplotlib.pyplot as plt
         import numpy as np
-        from neuroencoders.utils.backend import pd
+        from torch_neuroencoders.utils.backend import pd
         import seaborn as sns
         from scipy.stats import linregress
 
@@ -4915,7 +4915,7 @@ class Results_Loader(TuningCurvesPlotter):
 
         import matplotlib.pyplot as plt
         import numpy as np
-        from neuroencoders.utils.backend import pd
+        from torch_neuroencoders.utils.backend import pd
         import seaborn as sns
         from scipy.stats import spearmanr
 
@@ -5123,7 +5123,7 @@ class Results_Loader(TuningCurvesPlotter):
 
         import matplotlib.pyplot as plt
         import numpy as np
-        from neuroencoders.utils.backend import pd
+        from torch_neuroencoders.utils.backend import pd
         import seaborn as sns
         from scipy.stats import spearmanr
 

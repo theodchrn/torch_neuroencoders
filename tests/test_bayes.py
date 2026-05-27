@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from neuroencoders.simpleBayes.decode_bayes import Trainer
+from torch_neuroencoders.simpleBayes.decode_bayes import Trainer
 
 
 @pytest.fixture

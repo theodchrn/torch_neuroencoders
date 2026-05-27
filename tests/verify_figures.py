@@ -1,8 +1,8 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
-from neuroencoders.resultAnalysis.paper_figures import PaperFigures
-from neuroencoders.resultAnalysis.print_results import overview_fig
+from torch_neuroencoders.resultAnalysis.paper_figures import PaperFigures
+from torch_neuroencoders.resultAnalysis.print_results import overview_fig
 
 
 # Mocking necessary parts

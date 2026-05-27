@@ -13,7 +13,7 @@ import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
-from neuroencoders.utils.backend import pd
+from torch_neuroencoders.utils.backend import pd
 import pynapple as nap
 import seaborn as sns
 import tqdm
@@ -26,23 +26,23 @@ from scipy.ndimage import gaussian_filter, gaussian_filter1d
 from scipy.stats import binned_statistic_2d, sem, zscore
 from shapely.geometry import MultiPoint, Point, Polygon
 from shapely.ops import unary_union
-from neuroencoders.utils.backend import ml
+from torch_neuroencoders.utils.backend import ml
 
 DBSCAN = ml.cluster.DBSCAN
 from statsmodels.stats.proportion import proportions_ztest
 
-from neuroencoders.importData.epochs_management import find_closest_index, inEpochsMask
-from neuroencoders.importData.rawdata_parser import get_params
-from neuroencoders.resultAnalysis.print_results import overview_fig
-from neuroencoders.simpleBayes.decode_bayes import (
+from torch_neuroencoders.importData.epochs_management import find_closest_index, inEpochsMask
+from torch_neuroencoders.importData.rawdata_parser import get_params
+from torch_neuroencoders.resultAnalysis.print_results import overview_fig
+from torch_neuroencoders.simpleBayes.decode_bayes import (
     Trainer as TrainerBayes,
 )
-from neuroencoders.simpleBayes.decode_bayes import (
+from torch_neuroencoders.simpleBayes.decode_bayes import (
     extract_spike_counts_keops,
     extract_spike_counts_matrix_keops,
 )
-from neuroencoders.utils.PlaceField_dB import _run_place_field_analysis
-from neuroencoders.utils.global_classes import (
+from torch_neuroencoders.utils.PlaceField_dB import _run_place_field_analysis
+from torch_neuroencoders.utils.global_classes import (
     MAZE_COORDS,
     ZONEDEF,
     ZONELABELS,
@@ -50,7 +50,7 @@ from neuroencoders.utils.global_classes import (
     Project,
     is_in_zone,
 )
-from neuroencoders.utils.viz_params import (
+from torch_neuroencoders.utils.viz_params import (
     ALL_STIMS_COLOR,
     EC,
     FREEZING_LINE_COLOR,
@@ -270,7 +270,7 @@ class PaperFigures(TuningCurvesPlotter):
         self.PDF_FIGSIZE = tuple(kwargs.get("pdf_figsize", (12, 16)))
         self.PDF_DPI = int(kwargs.get("pdf_dpi", 300))
         if sleep:
-            from neuroencoders.resultAnalysis.paper_figures_sleep import (
+            from torch_neuroencoders.resultAnalysis.paper_figures_sleep import (
                 PaperFiguresSleep,
             )
 
@@ -6448,7 +6448,7 @@ class PaperFigures(TuningCurvesPlotter):
         :param lErrorNN_mean: mean linear error for NN
         :param lErrorBayes_mean: mean linear error for Bayes
         """
-        from neuroencoders.resultAnalysis.hyper_paper_figures import barplot_linError
+        from torch_neuroencoders.resultAnalysis.hyper_paper_figures import barplot_linError
 
         if dirSave is None:
             dirSave = self.folderFigures
@@ -6510,7 +6510,7 @@ class PaperFigures(TuningCurvesPlotter):
         :param lErrorNN_mean: mean linear error for NN
         :param lErrorBayes_mean: mean linear error for Bayes
         """
-        from neuroencoders.resultAnalysis.hyper_paper_figures import barplot_euclError
+        from torch_neuroencoders.resultAnalysis.hyper_paper_figures import barplot_euclError
 
         if dirSave is None:
             dirSave = self.folderFigures
@@ -7561,7 +7561,7 @@ if __name__ == "__main__":
 
     import tqdm
 
-    from neuroencoders.utils.MOBS_Functions import (
+    from torch_neuroencoders.utils.MOBS_Functions import (
         Mouse_Results,
         path_for_experiments_df,
     )

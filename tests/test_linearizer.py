@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 import tables
 
-from neuroencoders.transformData.linearizer import UMazeLinearizer
+from torch_neuroencoders.transformData.linearizer import UMazeLinearizer
 
 
 @pytest.fixture

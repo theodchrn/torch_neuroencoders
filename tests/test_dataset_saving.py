@@ -2,11 +2,11 @@ import os
 from unittest.mock import MagicMock
 
 import numpy as np
-from neuroencoders.utils.backend import pd
+from torch_neuroencoders.utils.backend import pd
 import pytest
 
-from neuroencoders.fullEncoder.an_network import LSTMandSpikeNetwork as TFNet
-from neuroencoders.fullEncoder.nnUtils_torch import load_tfrecord_examples
+from torch_neuroencoders.fullEncoder.an_network import LSTMandSpikeNetwork as TFNet
+from torch_neuroencoders.fullEncoder.nnUtils_torch import load_tfrecord_examples
 
 
 @pytest.fixture

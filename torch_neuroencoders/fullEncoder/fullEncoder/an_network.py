@@ -19,14 +19,14 @@ import dill as pickle
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from neuroencoders.utils.backend import pd
+from torch_neuroencoders.utils.backend import pd
 from tqdm import tqdm
 
 import wandb
 
 # Get utility functions
-from neuroencoders.fullEncoder import nnUtils
-from neuroencoders.fullEncoder.nnUtils_torch import (
+from torch_neuroencoders.fullEncoder import nnUtils
+from torch_neuroencoders.fullEncoder.nnUtils_torch import (
     TorchBatchDataset,
     batch_examples,
     build_tfrecord_description,
@@ -37,7 +37,7 @@ from neuroencoders.fullEncoder.nnUtils_torch import (
     write_tfrecord_examples,
     parse_serialized_sequence_torch,
 )
-from neuroencoders.fullEncoder.nnUtils import (
+from torch_neuroencoders.fullEncoder.nnUtils import (
     ContrastiveMonitor,
     ContrastiveRegressionLoss,
     ContrastiveVisualizer,
@@ -65,8 +65,8 @@ from neuroencoders.fullEncoder.nnUtils import (
     UnMaskingLayer,
     WandBErrorMapCallback,
 )
-from neuroencoders.importData.epochs_management import get_epochs_mask, inEpochsMask
-from neuroencoders.utils.global_classes import (
+from torch_neuroencoders.importData.epochs_management import get_epochs_mask, inEpochsMask
+from torch_neuroencoders.utils.global_classes import (
     DEFAULT_GRIDSIZE,
     DataHelper,
     Params,
@@ -3906,7 +3906,7 @@ class LSTMandSpikeNetwork(SpatialConstraintsMixin):
             f"CV before={cv_before:.4f}, CV expected after={cv_after:.4f}"
         )
 
-        from neuroencoders.importData.gui_elements import OversamplingVisualizer
+        from torch_neuroencoders.importData.gui_elements import OversamplingVisualizer
 
         if not os.path.exists(
             os.path.join(
@@ -4627,7 +4627,7 @@ class LSTMandSpikeNetwork(SpatialConstraintsMixin):
         """
         Call this ONCE before training to fit the DenseWeight model
         """
-        from neuroencoders.fullEncoder.nnUtils import DenseLossProcessor
+        from torch_neuroencoders.fullEncoder.nnUtils import DenseLossProcessor
 
         alpha = kwargs.get("alpha", 1.3)
         verbose = kwargs.get("verbose", False)

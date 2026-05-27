@@ -2,9 +2,9 @@ import json
 import os
 import subprocess
 
-from neuroencoders.utils.backend import pd
+from torch_neuroencoders.utils.backend import pd
 
-from neuroencoders.importData.rawdata_parser import get_params
+from torch_neuroencoders.importData.rawdata_parser import get_params
 
 
 def generate_json(

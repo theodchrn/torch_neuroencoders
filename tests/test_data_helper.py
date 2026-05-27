@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from neuroencoders.utils.global_classes import ZONEDEF, DataHelper, Project, is_in_zone
+from torch_neuroencoders.utils.global_classes import ZONEDEF, DataHelper, Project, is_in_zone
 
 
 def test_project_init(temp_project_dir):

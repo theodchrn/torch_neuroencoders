@@ -5,7 +5,7 @@ import pytest
 
 # We need to mock matplotlib BEFORE importing modules that might use it
 with patch("matplotlib.pyplot.show"):
-    import neuroencoders.resultAnalysis.paper_figures as paper_figures
+    import torch_neuroencoders.resultAnalysis.paper_figures as paper_figures
 
 
 def test_plotting_imports():
@@ -42,7 +42,7 @@ def test_plot_heatmaps_mock(mock_imshow):
 
 def test_paper_figures_gui_import():
     try:
-        from neuroencoders.importData import gui_elements
+        from torch_neuroencoders.importData import gui_elements
 
         assert gui_elements is not None
     except ImportError as e:

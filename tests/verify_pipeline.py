@@ -20,8 +20,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
 
-from neuroencoders.fullEncoder.an_network import LSTMandSpikeNetwork
-from neuroencoders.transformData.linearizer import UMazeLinearizer
+from torch_neuroencoders.fullEncoder.an_network import LSTMandSpikeNetwork
+from torch_neuroencoders.transformData.linearizer import UMazeLinearizer
 
 
 def set_seed(seed: int) -> None:
@@ -362,8 +362,8 @@ def main() -> None:
     tf.config.threading.set_inter_op_parallelism_threads(1)
 
     print("Importing neuroencoders modules...", flush=True)
-    from neuroencoders.fullEncoder.an_network import LSTMandSpikeNetwork
-    from neuroencoders.utils.global_classes import DataHelper, Params, Project
+    from torch_neuroencoders.fullEncoder.an_network import LSTMandSpikeNetwork
+    from torch_neuroencoders.utils.global_classes import DataHelper, Params, Project
 
     root = Path(os.getcwd())
     tests_dir = root / "tests"

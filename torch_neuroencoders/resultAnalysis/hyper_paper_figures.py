@@ -2,7 +2,7 @@ import os
 
 import matplotlib.pyplot as plt
 import numpy as np
-from neuroencoders.utils.backend import pd
+from torch_neuroencoders.utils.backend import pd
 import seaborn as sns
 from scipy.stats import sem
 

@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from neuroencoders.fullEncoder.nnUtils import (
+from torch_neuroencoders.fullEncoder.nnUtils import (
     GroupAttentionFusion,
     SpikeNet1DTorch,
 )

@@ -4,7 +4,7 @@ from typing import Optional, Tuple
 
 import mat73
 import numpy as np
-from neuroencoders.utils.backend import pd
+from torch_neuroencoders.utils.backend import pd
 import pynapple as nts
 import scipy.io
 import scipy.signal

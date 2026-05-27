@@ -26,15 +26,15 @@ import dill as pickle
 import matplotlib.pyplot as plt
 import numpy as np
 import tables
-import tensorflow as tf
+import torch
 from matplotlib.patches import Rectangle
 from pynapple import IntervalSet, TsGroup, TsdFrame
 from shapely import MultiPoint, Polygon
 
-from neuroencoders.importData import epochs_management as ep
-from neuroencoders.importData.rawdata_parser import get_behavior, get_params
-from neuroencoders.utils.backend import pd
-from neuroencoders.utils.management import get_git_info
+from torch_neuroencoders.importData import epochs_management as ep
+from torch_neuroencoders.importData.rawdata_parser import get_behavior, get_params
+from torch_neuroencoders.utils.backend import pd
+from torch_neuroencoders.utils.management import get_git_info
 
 MAZE_COORDS = np.array(
     [
@@ -532,7 +532,7 @@ class DataHelper(Project):
         Returns:
             - the speed mask that was applied to the positions, stored in self.fullBehavior["Times"]["speedFilter"]
         """
-        from neuroencoders.importData.epochs_management import inEpochsMask
+        from torch_neuroencoders.importData.epochs_management import inEpochsMask
 
         if not fix_speed:
             speed = self.fullBehavior["Speed"][:, 0]
@@ -589,7 +589,7 @@ class DataHelper(Project):
         print(f"forced speed filter with min {min_speed} and max {max_speed}")
 
     def recompute_speed(self, add_to_fullBehavior=False, l_function=None):
-        from neuroencoders.resultAnalysis.print_results import EC
+        from torch_neuroencoders.resultAnalysis.print_results import EC
 
         x_raw = self.fullBehavior["Positions"][:, 0] * EC[0]
         y_raw = self.fullBehavior["Positions"][:, 1] * EC[1]
@@ -794,7 +794,9 @@ class DataHelper(Project):
             )
 
         if show:
-            from neuroencoders.importData.gui_elements import AnimatedPositionPlotter
+            from torch_neuroencoders.importData.gui_elements import (
+                AnimatedPositionPlotter,
+            )
 
             data_helper = copy.deepcopy(self)
             data_helper.old_positions = data_helper.positions
@@ -1193,7 +1195,7 @@ class DataHelper(Project):
         from cmcrameri import cm
         from matplotlib.widgets import Button, Slider
 
-        from neuroencoders.utils.backend import skimage
+        from torch_neuroencoders.utils.backend import skimage
 
         regionprops = skimage.measure.regionprops
 
@@ -1800,7 +1802,7 @@ class DataHelper(Project):
         """
         import pynapple as nap
 
-        from neuroencoders.utils.backend import pd
+        from torch_neuroencoders.utils.backend import pd
 
         MovAccTsd = nap.Tsd(
             t=self.fullBehavior["MovTimes"].flatten(),
@@ -1852,7 +1854,7 @@ class DataHelper(Project):
         """
         Get spike data from the DataHelper and store it in the fullBehavior dict for later use.
         """
-        from neuroencoders.utils.wrappers import loadSpikeData
+        from torch_neuroencoders.utils.wrappers import loadSpikeData
 
         if (
             hasattr(self, "spikeData")
@@ -2429,32 +2431,32 @@ class SpatialConstraintsMixin:
         self.forbid_mask_np, self.forbid_mask_tf = self._create_spatial_masks()
 
         # Added for unified NN operations
-        self.common_eps = tf.constant(1e-8, dtype=tf.float32)
-        self.common_neg = tf.constant(-1e5, dtype=tf.float32)
+        self.common_eps = torch.constant(1e-8, dtype=torch.float32)
+        self.common_neg = torch.constant(-1e5, dtype=torch.float32)
 
     def gaussian_heatmap_targets_tf(self, pos_batch, sigma=0.03):
         """
         Generate Gaussian target heatmap for a batch of [x, y] positions.
         """
 
-        pos_batch = tf.cast(pos_batch, tf.float32)
+        pos_batch = torch.cast(pos_batch, torch.float32)
         X = self.Xc_tf[None]  # [1, H, W]
         Y = self.Yc_tf[None]
 
         dx = pos_batch[:, 0][:, None, None] - X
         dy = pos_batch[:, 1][:, None, None] - Y
-        gauss = tf.exp(-(dx**2 + dy**2) / (2 * sigma**2))
+        gauss = torch.exp(-(dx**2 + dy**2) / (2 * sigma**2))
 
         # Apply spatial mask
         allowed_mask = self.get_allowed_mask(use_tensorflow=True)
         gauss *= allowed_mask
 
         # Normalize across grid
-        gauss_sum = tf.reduce_sum(gauss, axis=[1, 2], keepdims=True)
-        gauss = tf.where(
+        gauss_sum = torch.reduce_sum(gauss, axis=[1, 2], keepdims=True)
+        gauss = torch.where(
             gauss_sum > self.common_eps,
             gauss / (gauss_sum + self.common_eps),
-            gauss / (tf.reduce_sum(allowed_mask) + self.common_eps + 1e-9),
+            gauss / (torch.reduce_sum(allowed_mask) + self.common_eps + 1e-9),
         )
         return gauss
 
@@ -2486,56 +2488,55 @@ class SpatialConstraintsMixin:
         )
         return gauss
 
-    def windowed_soft_argmax(self, probs: tf.Tensor, window_size=9):
+    def windowed_soft_argmax(self, probs: torch.Tensor, window_size=9):
         """
         Refines position to sub-pixel precision in normalized [0, 1] space.
         probs: (B, H, W) tensor
         """
-        B = tf.shape(probs)[0]
+        B = torch.shape(probs)[0]
         H, W = self.GRID_H, self.GRID_W
 
         # 1. Get the Hard Argmax Pixel Indices
-        flat_probs = tf.reshape(probs, [B, -1])
-        idx = tf.argmax(flat_probs, axis=-1)
-        py = tf.cast(idx // W, tf.int32)
-        px = tf.cast(idx % W, tf.int32)
+        flat_probs = torch.reshape(probs, [B, -1])
+        idx = torch.argmax(flat_probs, axis=-1)
+        py = torch.cast(idx // W, torch.int32)
+        px = torch.cast(idx % W, torch.int32)
 
         # 2. Create relative pixel offsets (e.g., -5 to 5)
         r = window_size // 2
-        offsets = tf.range(-r, r + 1, dtype=tf.int32)
-        yy_off, xx_off = tf.meshgrid(offsets, offsets, indexing="ij")  # (ws, ws)
+        offsets = torch.range(-r, r + 1, dtype=torch.int32)
+        yy_off, xx_off = torch.meshgrid(offsets, offsets, indexing="ij")  # (ws, ws)
 
         # 3. Calculate absolute pixel coordinates for the window
         yy_abs = py[:, None, None] + yy_off[None, :, :]
         xx_abs = px[:, None, None] + xx_off[None, :, :]
 
         # 4. Clip to stay within grid bounds [0, 44]
-        yy_clipped = tf.clip_by_value(yy_abs, 0, H - 1)
-        xx_clipped = tf.clip_by_value(xx_abs, 0, W - 1)
+        yy_clipped = torch.clip_by_value(yy_abs, 0, H - 1)
+        xx_clipped = torch.clip_by_value(xx_abs, 0, W - 1)
 
         # 5. Gather indices for gather_nd
-        batch_indices = tf.tile(
-            tf.range(B)[:, None, None], [1, window_size, window_size]
+        batch_indices = torch.tile(
+            torch.range(B)[:, None, None], [1, window_size, window_size]
         )
-        indices = tf.stack([batch_indices, yy_clipped, xx_clipped], axis=-1)
+        indices = torch.stack([batch_indices, yy_clipped, xx_clipped], axis=-1)
 
         # 6. Gather Probs AND Normalized Coordinates for the window
         # This is the "Fix": we pull from your [0, 1] meshes (Xc, Yc)
-        w_probs = tf.gather_nd(probs, indices)
-        w_xc = tf.gather_nd(tf.tile(self.Xc_tf[None], [B, 1, 1]), indices)
-        w_yc = tf.gather_nd(tf.tile(self.Yc_tf[None], [B, 1, 1]), indices)
+        w_probs = torch.gather_nd(probs, indices)
+        w_xc = torch.gather_nd(torch.tile(self.Xc_tf[None], [B, 1, 1]), indices)
+        w_yc = torch.gather_nd(torch.tile(self.Yc_tf[None], [B, 1, 1]), indices)
 
         # 7. Local Re-normalization of probabilities within the window
         w_probs_norm = w_probs / (
-            tf.reduce_sum(w_probs, axis=[1, 2], keepdims=True) + 1e-8
+            torch.reduce_sum(w_probs, axis=[1, 2], keepdims=True) + 1e-8
         )
 
         # 8. Compute refined Center of Mass in [0, 1] space
-        refined_x = tf.reduce_sum(w_probs_norm * w_xc, axis=[1, 2])
-        refined_y = tf.reduce_sum(w_probs_norm * w_yc, axis=[1, 2])
+        refined_x = torch.reduce_sum(w_probs_norm * w_xc, axis=[1, 2])
+        refined_y = torch.reduce_sum(w_probs_norm * w_yc, axis=[1, 2])
 
         return refined_x, refined_y
-
 
     def windowed_soft_argmax_torch(self, probs, window_size=9):
         """Torch version of the local soft-argmax refinement."""
@@ -2600,8 +2601,12 @@ class SpatialConstraintsMixin:
         sum_p = probs_allowed.sum(dim=(1, 2), keepdim=True)
         probs_allowed = probs_allowed / (sum_p + common_eps)
 
-        x_grid = torch.as_tensor(self.Xc_np, dtype=logits_hw.dtype, device=logits_hw.device)
-        y_grid = torch.as_tensor(self.Yc_np, dtype=logits_hw.dtype, device=logits_hw.device)
+        x_grid = torch.as_tensor(
+            self.Xc_np, dtype=logits_hw.dtype, device=logits_hw.device
+        )
+        y_grid = torch.as_tensor(
+            self.Yc_np, dtype=logits_hw.dtype, device=logits_hw.device
+        )
 
         if mode == "expectation":
             ex = (probs_allowed * x_grid[None]).sum(dim=(1, 2))
@@ -2637,31 +2642,31 @@ class SpatialConstraintsMixin:
         """
         Unified decoding logic for Gaussian heatmaps.
         """
-        B = tf.shape(logits_hw)[0]
+        B = torch.shape(logits_hw)[0]
         H, W = self.GRID_H, self.GRID_W
 
         # Mask forbidden
-        masked_logits = tf.where(
+        masked_logits = torch.where(
             self.forbid_mask_tf[None] > 0, self.common_neg, logits_hw
         )
 
         # Softmax over grid
-        probs_flat = tf.nn.softmax(tf.reshape(masked_logits, [B, H * W]), axis=-1)
-        probs = tf.reshape(probs_flat, [B, H, W])
+        probs_flat = torch.nn.softmax(torch.reshape(masked_logits, [B, H * W]), axis=-1)
+        probs = torch.reshape(probs_flat, [B, H, W])
 
         # Renormalize (safety)
         allowed_mask = self.get_allowed_mask(use_tensorflow=True)
         probs_allowed = probs * allowed_mask
-        sum_p = tf.reduce_sum(probs_allowed, axis=[1, 2], keepdims=True)
+        sum_p = torch.reduce_sum(probs_allowed, axis=[1, 2], keepdims=True)
         probs_allowed /= sum_p + self.common_eps
 
         if mode == "expectation":
-            ex = tf.reduce_sum(probs_allowed * self.Xc_tf[None], axis=[1, 2])
-            ey = tf.reduce_sum(probs_allowed * self.Yc_tf[None], axis=[1, 2])
+            ex = torch.reduce_sum(probs_allowed * self.Xc_tf[None], axis=[1, 2])
+            ey = torch.reduce_sum(probs_allowed * self.Yc_tf[None], axis=[1, 2])
         elif mode == "argmax":  # argmax
-            idx = tf.argmax(tf.reshape(probs_allowed, [B, H * W]), axis=-1)
-            ex = tf.gather(tf.reshape(self.Xc_tf, [-1]), idx)
-            ey = tf.gather(tf.reshape(self.Yc_tf, [-1]), idx)
+            idx = torch.argmax(torch.reshape(probs_allowed, [B, H * W]), axis=-1)
+            ex = torch.gather(torch.reshape(self.Xc_tf, [-1]), idx)
+            ey = torch.gather(torch.reshape(self.Yc_tf, [-1]), idx)
         elif mode == "soft_argmax":
             ex, ey = self.windowed_soft_argmax(probs_allowed)
         else:
@@ -2670,25 +2675,25 @@ class SpatialConstraintsMixin:
             )
 
         # Variance
-        varx = tf.reduce_sum(
-            probs_allowed * tf.square(self.Xc_tf[None] - ex[:, None, None]), [1, 2]
+        varx = torch.reduce_sum(
+            probs_allowed * torch.square(self.Xc_tf[None] - ex[:, None, None]), [1, 2]
         )
-        vary = tf.reduce_sum(
-            probs_allowed * tf.square(self.Yc_tf[None] - ey[:, None, None]), [1, 2]
+        vary = torch.reduce_sum(
+            probs_allowed * torch.square(self.Yc_tf[None] - ey[:, None, None]), [1, 2]
         )
         var = varx + vary
 
         # max probability (confidence)
-        maxp = tf.reduce_max(probs_flat, axis=1)
+        maxp = torch.reduce_max(probs_flat, axis=1)
 
         # Normalized Entropy
-        H_entropy = -tf.reduce_sum(
-            probs_flat * tf.math.log(probs_flat + self.common_eps), axis=1
+        H_entropy = -torch.reduce_sum(
+            probs_flat * torch.math.log(probs_flat + self.common_eps), axis=1
         )
-        n_allowed = tf.reduce_sum(allowed_mask)
-        Hn = H_entropy / tf.math.log(n_allowed + self.common_eps)
+        n_allowed = torch.reduce_sum(allowed_mask)
+        Hn = H_entropy / torch.math.log(n_allowed + self.common_eps)
 
-        xy = tf.stack([ex, ey], axis=-1)
+        xy = torch.stack([ex, ey], axis=-1)
         if return_probs:
             return xy, maxp, Hn, var, probs_allowed
         return xy, maxp, Hn, var
@@ -2701,9 +2706,13 @@ class SpatialConstraintsMixin:
         self.Xc_np, self.Yc_np = np.meshgrid(x_cent_np, y_cent_np, indexing="xy")
 
         # TensorFlow version (for ANN decoder)
-        x_cent_tf = tf.linspace(0.5 / self.GRID_W, 1 - 0.5 / self.GRID_W, self.GRID_W)
-        y_cent_tf = tf.linspace(0.5 / self.GRID_H, 1 - 0.5 / self.GRID_H, self.GRID_H)
-        self.Xc_tf, self.Yc_tf = tf.meshgrid(x_cent_tf, y_cent_tf, indexing="xy")
+        x_cent_tf = torch.linspace(
+            0.5 / self.GRID_W, 1 - 0.5 / self.GRID_W, self.GRID_W
+        )
+        y_cent_tf = torch.linspace(
+            0.5 / self.GRID_H, 1 - 0.5 / self.GRID_H, self.GRID_H
+        )
+        self.Xc_tf, self.Yc_tf = torch.meshgrid(x_cent_tf, y_cent_tf, indexing="xy")
 
     def get_spatial_config(self):
         """Return spatial config for serialization"""
@@ -2778,7 +2787,7 @@ class SpatialConstraintsMixin:
                 raise ValueError(f"maze_params dict must contain keys: {required_keys}")
         return maze_params
 
-    def _create_spatial_masks(self) -> Tuple[np.ndarray, tf.Tensor]:
+    def _create_spatial_masks(self) -> Tuple[np.ndarray, torch.Tensor]:
         """Create spatial constraint masks for both numpy and tensorflow"""
         # Create forbidden region mask
         # Note: Using your original logic where FORBID=1 means forbidden
@@ -2791,11 +2800,11 @@ class SpatialConstraintsMixin:
         ).astype(np.float32)
 
         # TensorFlow version
-        forbid_tf = tf.cast(
+        forbid_tf = torch.cast(
             (self.Xc_tf > self.maze_params_dict["gap_x_min"])
             & (self.Xc_tf < self.maze_params_dict["gap_x_max"])
             & (self.Yc_tf <= self.maze_params_dict["gap_y_min"]),
-            tf.float32,
+            torch.float32,
         )
 
         self.MAZE_COORDS = np.array(
@@ -2911,7 +2920,9 @@ class SpatialConstraintsMixin:
 
     def update_allowed_mask(self, forbid_mask):
         self.forbid_mask_np = forbid_mask.astype(np.float32)  # dynamic update for ANN
-        self.forbid_mask_tf = tf.cast(forbid_mask, tf.float32)  # dynamic update for ANN
+        self.forbid_mask_tf = torch.cast(
+            forbid_mask, torch.float32
+        )  # dynamic update for ANN
 
     def get_allowed_mask_for_bin_size(self, w, h):
         """

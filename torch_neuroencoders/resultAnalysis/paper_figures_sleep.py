@@ -2,17 +2,17 @@ import os
 
 import matplotlib.pyplot as plt
 import numpy as np
-from neuroencoders.utils.backend import pd
+from torch_neuroencoders.utils.backend import pd
 import pykeops
 import seaborn as sns
 import tables
 from statannotations.Annotator import Annotator
 
-from neuroencoders.importData.epochs_management import inEpochsMask
-from neuroencoders.importData.rawdata_parser import get_params
-from neuroencoders.simpleBayes.decode_bayes import Trainer as TrainerBayes
-from neuroencoders.utils.global_classes import Project
-from neuroencoders.utils.viz_params import white_viridis
+from torch_neuroencoders.importData.epochs_management import inEpochsMask
+from torch_neuroencoders.importData.rawdata_parser import get_params
+from torch_neuroencoders.simpleBayes.decode_bayes import Trainer as TrainerBayes
+from torch_neuroencoders.utils.global_classes import Project
+from torch_neuroencoders.utils.viz_params import white_viridis
 
 plt.style.use("neuroencoders.mobs")
 pykeops.set_verbose(False)

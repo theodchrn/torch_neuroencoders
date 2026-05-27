@@ -10,14 +10,14 @@ import os
 
 # Get common libraries
 import numpy as np
-from neuroencoders.utils.backend import pd
+from torch_neuroencoders.utils.backend import pd
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"  # Only show errors, not warnings
 import tensorflow as tf
 
 # Get utility functions
-from neuroencoders.fullEncoder import nnUtils
-from neuroencoders.utils.global_classes import Params, Project
+from torch_neuroencoders.fullEncoder import nnUtils
+from torch_neuroencoders.utils.global_classes import Params, Project
 
 # We generate a model with the functional Model interface in tensorflow
 ########### FULL NETWORK CLASS #####################

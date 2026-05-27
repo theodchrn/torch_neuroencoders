@@ -9,13 +9,13 @@ import matplotlib as mplt
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.polynomial.polynomial as poly
-from neuroencoders.utils.backend import pd
+from torch_neuroencoders.utils.backend import pd
 import seaborn as sns
 from matplotlib.lines import Line2D
 from matplotlib.ticker import FuncFormatter, MaxNLocator
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
-from neuroencoders.importData.gui_elements import (
+from torch_neuroencoders.importData.gui_elements import (
     circular_mean_error,
     create_polar_colorbar,
     plot_circular_comparison,
@@ -1123,7 +1123,7 @@ def overview_fig(
                 ax1.set_ylabel(f"{dim_names[dim]}")
         else:
             # Keep existing linanddirection logic
-            from neuroencoders.importData.gui_elements import ModelPerformanceVisualizer
+            from torch_neuroencoders.importData.gui_elements import ModelPerformanceVisualizer
 
             if fig is None:
                 if axs is None:
@@ -1586,7 +1586,7 @@ def overview_fig(
                     bbox_to_anchor=(0.1, 0),
                 )
         else:
-            from neuroencoders.importData.gui_elements import ModelPerformanceVisualizer
+            from torch_neuroencoders.importData.gui_elements import ModelPerformanceVisualizer
 
             fig, ax1 = plt.subplots()
             visualizer = ModelPerformanceVisualizer(

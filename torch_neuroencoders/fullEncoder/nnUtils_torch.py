@@ -7,6 +7,7 @@ use while converting the rest of the codebase to PyTorch.
 Start small: tensor conversion, dtype helpers, device context and a
 few mask/standardization helpers used throughout the code.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -209,7 +210,9 @@ def _numpy_scalar_list(value: Any) -> List[Any]:
     return array.reshape(-1).tolist()
 
 
-def write_tfrecord_examples(dataset: Iterable[Dict[str, Any]], output_path: str) -> None:
+def write_tfrecord_examples(
+    dataset: Iterable[Dict[str, Any]], output_path: str
+) -> None:
     """Write a stream of dictionaries to an uncompressed TFRecord file."""
     classes = _get_tfrecord_example_classes()
     example_cls = classes["Example"]
@@ -223,9 +226,13 @@ def write_tfrecord_examples(dataset: Iterable[Dict[str, Any]], output_path: str)
                 feature = example.features.feature[key]
                 array = _to_numpy(value)
                 if array.dtype.kind in {"f", "c"}:
-                    feature.float_list.value.extend(float(v) for v in _numpy_scalar_list(array))
+                    feature.float_list.value.extend(
+                        float(v) for v in _numpy_scalar_list(array)
+                    )
                 elif array.dtype.kind in {"i", "u", "b"}:
-                    feature.int64_list.value.extend(int(v) for v in _numpy_scalar_list(array))
+                    feature.int64_list.value.extend(
+                        int(v) for v in _numpy_scalar_list(array)
+                    )
                 else:
                     encoded = array.reshape(-1).tolist()
                     if len(encoded) == 1 and isinstance(encoded[0], (bytes, bytearray)):
@@ -304,7 +311,9 @@ class TorchBatchDataset:
     def take(self, count: int) -> "TorchBatchDataset":
         return TorchBatchDataset(self.batches[:count], repeat=False)
 
-    def as_numpy_iterator(self) -> Iterator[Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]]:
+    def as_numpy_iterator(
+        self,
+    ) -> Iterator[Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]]:
         yield from self
 
     def prefetch(self, *_args, **_kwargs):
@@ -334,7 +343,9 @@ def parse_serialized_sequence_torch(
     for key in ["pos", "groups", "indexInDat"]:
         value = _to_numpy(tensors[key])
         if key == "pos":
-            tensors[key] = torch.as_tensor(value, dtype=torch.float32).reshape(params.dimOutput)
+            tensors[key] = torch.as_tensor(value, dtype=torch.float32).reshape(
+                params.dimOutput
+            )
             continue
 
         value = value.reshape(-1)
@@ -355,21 +366,32 @@ def parse_serialized_sequence_torch(
 
         limit = min(actual_spike_count, max_spikes_per_group)
         flat_limit = limit * spike_size
-        reshaped = group_value[:flat_limit].reshape(limit, params.nChannelsPerGroup[g], 32)
+        reshaped = group_value[:flat_limit].reshape(
+            limit, params.nChannelsPerGroup[g], 32
+        )
         padded = np.zeros(
-            (max_spikes_per_group, params.nChannelsPerGroup[g], 32), dtype=group_value.dtype
+            (max_spikes_per_group, params.nChannelsPerGroup[g], 32),
+            dtype=group_value.dtype,
         )
         padded[:limit] = reshaped
         tensors[group_key] = torch.as_tensor(padded, dtype=torch.float32)
 
         if count_spikes:
-            tensors[f"group{g}_spikes_count"] = torch.tensor(actual_spike_count, dtype=torch.int32)
+            tensors[f"group{g}_spikes_count"] = torch.tensor(
+                actual_spike_count, dtype=torch.int32
+            )
 
     tensors["total_nb_spikes"] = torch.tensor(
-        int(raw_groups.shape[0] if raw_groups is not None else len(_to_numpy(tensors["groups"]))),
+        int(
+            raw_groups.shape[0]
+            if raw_groups is not None
+            else len(_to_numpy(tensors["groups"]))
+        ),
         dtype=torch.int32,
     )
-    tensors["max_spikes_in_groups"] = torch.tensor(max(lengths) if lengths else 0, dtype=torch.int32)
+    tensors["max_spikes_in_groups"] = torch.tensor(
+        max(lengths) if lengths else 0, dtype=torch.int32
+    )
     return tensors
 
 
@@ -389,13 +411,17 @@ def create_indices_torch(vals: Dict[str, Any], n_groups: int, shuffle: bool = Fa
     for group_id in range(n_groups):
         is_in_group = groups.eq(group_id)
         relative_indices = torch.cumsum(is_in_group.to(torch.int32), dim=0)
-        indices_tensor = torch.where(is_in_group, relative_indices, torch.zeros_like(relative_indices))
+        indices_tensor = torch.where(
+            is_in_group, relative_indices, torch.zeros_like(relative_indices)
+        )
 
         if shuffle:
             mask = indices_tensor.gt(0)
             non_zero_indices = indices_tensor[mask]
             if non_zero_indices.numel() > 0:
-                shuffled_values = non_zero_indices[torch.randperm(non_zero_indices.numel())]
+                shuffled_values = non_zero_indices[
+                    torch.randperm(non_zero_indices.numel())
+                ]
                 indices_tensor = torch.zeros_like(indices_tensor)
                 indices_tensor[mask] = shuffled_values
 
@@ -420,11 +446,15 @@ def batch_examples(
             inputs_list.append(example[0])
             targets_list.append(example[1])
 
-        batches.append((_collate_examples(inputs_list), _collate_examples(targets_list)))
+        batches.append(
+            (_collate_examples(inputs_list), _collate_examples(targets_list))
+        )
     return batches
 
 
-def maybe_shuffle_examples(examples: List[Any], shuffle: bool, seed: Optional[int] = None):
+def maybe_shuffle_examples(
+    examples: List[Any], shuffle: bool, seed: Optional[int] = None
+):
     if not shuffle:
         return examples
     shuffled = list(examples)
@@ -530,10 +560,14 @@ def standardize_channelwise_tensor(
     rank = tensor.ndim
     axis = axis if axis >= 0 else rank + axis
     if axis < 0 or axis >= rank:
-        raise ValueError(f"Invalid standardization axis {axis} for shape {tuple(tensor.shape)}")
+        raise ValueError(
+            f"Invalid standardization axis {axis} for shape {tuple(tensor.shape)}"
+        )
 
     mean = _to_torch_tensor(mean, dtype=tensor.dtype).to(device=tensor.device)
-    standard_deviation = _to_torch_tensor(standard_deviation, dtype=tensor.dtype).to(device=tensor.device)
+    standard_deviation = _to_torch_tensor(standard_deviation, dtype=tensor.dtype).to(
+        device=tensor.device
+    )
 
     broadcast_shape = [1] * rank
     broadcast_shape[axis] = mean.shape[0]
@@ -554,12 +588,16 @@ def standardize_channelwise_tensor(
     return torch.where(spike_mask, standardized, torch.zeros_like(standardized))
 
 
-def safe_mask_creation(batchedInputGroups: torch.Tensor, pad_value: int = -1) -> torch.Tensor:
+def safe_mask_creation(
+    batchedInputGroups: torch.Tensor, pad_value: int = -1
+) -> torch.Tensor:
     """Create boolean mask where True indicates valid (not equal to pad_value)."""
     return batchedInputGroups.ne(pad_value)
 
 
-def create_attention_mask_from_padding_mask(padding_mask: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
+def create_attention_mask_from_padding_mask(
+    padding_mask: Optional[torch.Tensor],
+) -> Optional[torch.Tensor]:
     """Convert padding mask to attention mask for transformer layers.
 
     Input `padding_mask` should be boolean-like with True for valid tokens.
